@@ -95,7 +95,7 @@ class TestRowCap:
         """Aggregation happens in the database, so the cap limits the rows
         returned — never the rows considered."""
         result = execute_readonly("SELECT count(*) FROM orders", max_rows=1)
-        assert result.rows[0][0] == 50_000
+        assert result.rows[0][0] == seeded.orders
 
 
 class TestErrorTranslation:
@@ -176,7 +176,7 @@ class TestSessionIsolation:
             execute_readonly("SELECT * FROM no_such_table")
 
         result = execute_readonly("SELECT count(*) FROM orders")
-        assert result.rows[0][0] == 50_000
+        assert result.rows[0][0] == seeded.orders
 
     def test_repeated_execution_reuses_the_pool(self, seeded):
         """Engines are cached per process; a fresh pool per query would make

@@ -241,7 +241,9 @@ class TestCustomerAnalysis:
             """,
         )
         assert len(rows) == 6
-        assert sum(row[1] for row in rows) == 5000
+        # Every customer lands in exactly one channel: the GROUP BY must not
+        # drop or duplicate any.
+        assert sum(row[1] for row in rows) == seeded.customers
 
     def test_channel_quality_differs(self, readonly_conn, seeded):
         """Acquisition source should predict customer value, or "which channel
