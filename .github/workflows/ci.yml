@@ -1,0 +1,211 @@
+name: CI
+
+# Runs on every push and pull request to the default branch. Nothing here
+# deploys anything — a pipeline that pretends to deploy is worse than none.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # Supersede an in-flight run when new commits land on the same ref.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Backend: lint, types, and the full test suite against a real PostgreSQL.
+  # ---------------------------------------------------------------------------
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        # A real database, not a mock. The read-only security tests assert that
+        # PostgreSQL itself refuses writes, which only a real server can prove.
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-postgres-password
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      APP_ENV: test
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: datapilot
+      POSTGRES_SUPERUSER: postgres
+      POSTGRES_SUPERUSER_PASSWORD: ci-postgres-password
+      POSTGRES_ADMIN_USER: datapilot_admin
+      POSTGRES_ADMIN_PASSWORD: ci-admin-password
+      POSTGRES_READONLY_USER: datapilot_readonly
+      POSTGRES_READONLY_PASSWORD: ci-readonly-password
+      # No GEMINI_API_KEY: CI runs against the deterministic offline baseline,
+      # so the suite needs no secret, costs nothing, and cannot flake on a
+      # third-party outage.
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Ruff (lint)
+        run: ruff check .
+
+      - name: Ruff (format)
+        run: ruff format --check .
+
+      - name: mypy
+        run: mypy app scripts evaluation
+
+      - name: Unit tests
+        # Run first and separately: they need no database, so a failure here is
+        # a logic bug and is reported without the integration noise.
+        run: pytest -m unit -q
+
+      - name: Seed the warehouse
+        # Smaller than the default 50k so CI stays quick; the behaviour under
+        # test is scale-invariant.
+        run: python -m scripts.seed_database --reset --orders 6000 --customers 800
+
+      - name: Full test suite
+        run: pytest -q --cov=app --cov-report=term-missing
+
+      - name: Evaluation benchmark
+        run: python -m evaluation.run --quiet
+
+  # ---------------------------------------------------------------------------
+  # Frontend: lint, types, production build.
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: TypeScript
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # Secret scanning. Cheap, and the failure it catches is expensive.
+  # ---------------------------------------------------------------------------
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for committed secrets
+        run: |
+          set -euo pipefail
+
+          # .env must never be tracked. .env.example is, and holds placeholders.
+          if git ls-files --error-unmatch .env 2>/dev/null; then
+            echo "::error::.env is tracked by git"
+            exit 1
+          fi
+
+          # Credential-shaped strings in tracked files. Excludes the example
+          # file and lockfiles, which legitimately contain hash-like tokens.
+          if git grep -nIE \
+              "(AIza[0-9A-Za-z_-]{30,}|sk-[A-Za-z0-9]{32,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)" \
+              -- ':!*.lock' ':!package-lock.json' ':!.env.example'; then
+            echo "::error::a credential-shaped string is committed"
+            exit 1
+          fi
+
+          # A real password in a DSN. The placeholder forms used in docs and
+          # tests are allowed through explicitly.
+          if git grep -nIE "postgres(ql)?(\+[a-z]+)?://[^:@/ ]+:[^@/ ]+@" \
+              -- ':!*.lock' ':!package-lock.json' ':!.env.example' \
+            | grep -vE "(change-me|your-|\\*\\*\\*|user:pass|hunter2|admin:b|ro:a|u:hunter2|secret999|s3cret|localhost:5432/warehouse)"; then
+            echo "::error::a connection string with a password is committed"
+            exit 1
+          fi
+
+          echo "No committed secrets found."
+
+  # ---------------------------------------------------------------------------
+  # Docker images build. Validates the Dockerfiles without pushing anything.
+  # ---------------------------------------------------------------------------
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [backend, frontend]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: false
+          load: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: false
+          load: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

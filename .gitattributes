@@ -1,0 +1,18 @@
+# Normalise line endings: the repo stores LF, Windows checkouts get CRLF where
+# it matters. Keeps diffs clean between Windows development and Linux CI.
+* text=auto eol=lf
+
+# Shell scripts must stay LF even on Windows checkouts.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+*.sql       text eol=lf
+
+# Binary — never diff or convert.
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+
+# Collapse lockfile noise in pull request diffs.
+package-lock.json -diff linguist-generated

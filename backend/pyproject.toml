@@ -1,0 +1,147 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "datapilot-ai"
+version = "0.1.0"
+description = "Agentic AI data analyst: natural language to validated SQL, analysis and insights."
+requires-python = ">=3.12,<3.13"
+
+dependencies = [
+    # --- API layer -------------------------------------------------------
+    "fastapi>=0.115,<0.120",
+    "uvicorn[standard]>=0.34,<0.40",
+    "pydantic>=2.10,<3",
+    "pydantic-settings>=2.7,<3",
+
+    # --- Database --------------------------------------------------------
+    "SQLAlchemy>=2.0.36,<2.1",
+    "psycopg[binary]>=3.2,<4",       # psycopg3; psycopg2 is legacy
+
+    # --- SQL safety ------------------------------------------------------
+    # sqlglot parses SQL into an AST so the validator can reason about what a
+    # query *is*, instead of regex-matching what it looks like.
+    "sqlglot>=26.0,<28",
+
+    # --- Analysis --------------------------------------------------------
+    "pandas>=2.2,<3",
+    "numpy>=2.1,<3",
+
+    # --- Agent orchestration + LLM ---------------------------------------
+    "langgraph>=0.2.60,<0.7",
+    "google-genai>=1.0,<2",          # current unified Gemini SDK
+
+    # --- Observability ---------------------------------------------------
+    "structlog>=25.1,<26",
+
+    # --- Synthetic data --------------------------------------------------
+    # Runtime rather than dev-only: `python -m scripts.seed_database` is a
+    # supported project command, so it must work from a plain install.
+    "Faker>=33.0,<40",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<9",
+    "pytest-asyncio>=0.25,<2",
+    "pytest-cov>=6.0,<8",
+    "httpx>=0.28,<0.29",             # FastAPI TestClient transport
+    "ruff>=0.9,<0.16",
+    "mypy>=1.14,<2",
+    "pandas-stubs>=2.2,<3",     # typed pandas for mypy
+]
+
+# ---------------------------------------------------------------------------
+# Packaging — the repo is a flat layout with several top-level packages, so
+# autodiscovery must be replaced with an explicit list. `tests` is not shipped.
+# ---------------------------------------------------------------------------
+[tool.setuptools.packages.find]
+include = ["app*", "evaluation*", "scripts*"]
+exclude = ["tests*"]
+
+# ---------------------------------------------------------------------------
+# Ruff — linting + formatting (replaces black/isort/flake8)
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["app", "evaluation", "scripts", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # import sorting
+    "B",         # bugbear
+    "UP",        # pyupgrade
+    "ANN",       # require type annotations
+    "S",         # bandit security checks
+    "C4",        # comprehensions
+    "SIM",       # simplification
+    "RUF",
+]
+ignore = [
+    "ANN401",    # allow `Any` where a boundary genuinely is dynamic
+    "B008",      # FastAPI Depends() in defaults is the documented idiom
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "evaluation", "scripts"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests legitimately use asserts and may skip return annotations.
+"tests/**" = ["S101", "ANN201", "ANN001"]
+# Seed/eval scripts print to stdout and use non-crypto randomness on purpose.
+# Synthetic-data generation uses `random` deliberately: it must be seedable
+# and reproducible, which a CSPRNG is not. None of it is security-relevant.
+"app/database/seed/**" = ["S311"]
+"scripts/**" = ["S311", "T201"]
+"evaluation/**" = ["S311", "T201"]
+
+# ---------------------------------------------------------------------------
+# mypy
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["tests.*", "evaluation.*"]
+disallow_untyped_defs = false
+
+# LangGraph types its node and edge parameters through a large internal
+# protocol union that a plain `Callable[[State], dict]` does not satisfy, and
+# that surface changes between minor releases. The functions here are correctly
+# annotated and covered by tests; contorting them to match an unstable
+# third-party generic would make the graph harder to read for no real safety.
+[[tool.mypy.overrides]]
+module = ["app.agents.graph"]
+disable_error_code = ["arg-type", "call-overload"]
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+# `-m "not llm"` keeps the default suite hermetic: the live-model tests are
+# opt-in via `pytest -m llm`, which overrides this. Without it a configured
+# API key silently turns every local and CI run into a billed, rate-limited,
+# network-dependent one.
+addopts = "-q --strict-markers --strict-config -m 'not llm'"
+asyncio_mode = "auto"
+markers = [
+    "unit: fast, no external dependencies",
+    "integration: requires a live PostgreSQL database",
+    "llm: requires a live Gemini API key (skipped in CI)",
+]
+
+[tool.coverage.run]
+source = ["app"]
+omit = ["*/__init__.py"]

@@ -1,0 +1,109 @@
+# DataPilot AI — full local stack.
+#
+#   cp .env.example .env     # fill in the passwords and (optionally) a Gemini key
+#   docker compose up --build
+#   docker compose exec backend python -m scripts.seed_database
+#
+# Then open http://localhost:5173.
+#
+# Docker is NOT required for development. `docs/LOCAL_POSTGRES.md` covers
+# running the stack natively, which is how it was built.
+
+name: datapilot-ai
+
+services:
+  # --------------------------------------------------------------------------
+  # PostgreSQL
+  # --------------------------------------------------------------------------
+  postgres:
+    image: postgres:17-alpine
+    container_name: datapilot-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?set POSTGRES_SUPERUSER_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_MAINTENANCE_DB:-postgres}
+      # scram-sha-256 rather than the older md5 default.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=scram-sha-256"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      # Exposed for local inspection. Remove this mapping for a deployment where
+      # only the backend should reach the database.
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      # The backend waits on this, so it never starts against a database that is
+      # listening but not yet accepting queries.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_SUPERUSER:-postgres} -d ${POSTGRES_MAINTENANCE_DB:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # --------------------------------------------------------------------------
+  # FastAPI backend
+  # --------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: datapilot-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+      # `postgres` is the compose service name, not localhost: inside the
+      # network each service resolves the others by name.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-datapilot}
+      POSTGRES_SUPERUSER: ${POSTGRES_SUPERUSER:-postgres}
+      POSTGRES_SUPERUSER_PASSWORD: ${POSTGRES_SUPERUSER_PASSWORD:?required}
+      POSTGRES_ADMIN_USER: ${POSTGRES_ADMIN_USER:-datapilot_admin}
+      POSTGRES_ADMIN_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?required}
+      POSTGRES_READONLY_USER: ${POSTGRES_READONLY_USER:-datapilot_readonly}
+      POSTGRES_READONLY_PASSWORD: ${POSTGRES_READONLY_PASSWORD:?required}
+
+      # Optional. Without it the deterministic offline baseline answers, and
+      # every response is marked as simulated.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+
+      SQL_STATEMENT_TIMEOUT_MS: ${SQL_STATEMENT_TIMEOUT_MS:-10000}
+      SQL_MAX_RESULT_ROWS: ${SQL_MAX_RESULT_ROWS:-5000}
+      SQL_MAX_RETRIES: ${SQL_MAX_RETRIES:-2}
+
+      # nginx proxies /api on the same origin, so the browser never makes a
+      # cross-origin request and this list is a fallback for direct access.
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  # --------------------------------------------------------------------------
+  # React frontend, served by nginx
+  # --------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: datapilot-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+
+volumes:
+  postgres-data:
+    name: datapilot-postgres-data
