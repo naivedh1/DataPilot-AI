@@ -64,6 +64,15 @@ class EvalCase:
     expect_sorted_desc: bool = False
     #: (column substring, minimum, maximum) sanity bounds on a numeric column.
     expect_value_range: tuple[str, float, float] | None = None
+    #: (column substring, table): the expected value is that table's live row
+    #: count, resolved against the warehouse when the run starts.
+    #:
+    #: Used where the true answer is a property of the seeded data rather than
+    #: a constant. Warehouse size is a deployment choice - CI seeds a smaller
+    #: one to keep runs fast - so a literal here encodes one particular seed
+    #: size and fails everywhere else. The expectation still comes from
+    #: deterministic SQL, never from what the agent happened to answer.
+    expect_row_count_of: tuple[str, str] | None = None
 
     #: The question cannot be answered from this warehouse; the system must say
     #: so rather than inventing a query.
@@ -259,8 +268,8 @@ CASES: tuple[EvalCase, ...] = (
         intent="aggregation",
         expect_tables=frozenset({"customers"}),
         expect_rows=1,
-        expect_value_range=("customer", 4999.0, 5001.0),
-        notes="Exactly 5,000 customers are generated.",
+        expect_row_count_of=("customer", "customers"),
+        notes="Must match the warehouse exactly, whatever size it was seeded to.",
     ),
     EvalCase(
         id="cus-002",
@@ -349,8 +358,8 @@ CASES: tuple[EvalCase, ...] = (
         intent="aggregation",
         expect_tables=frozenset({"orders"}),
         expect_rows=1,
-        expect_value_range=("order", 49999.0, 50001.0),
-        notes="Exactly 50,000 orders are generated.",
+        expect_row_count_of=("order", "orders"),
+        notes="Must match the warehouse exactly, whatever size it was seeded to.",
     ),
     EvalCase(
         id="ord-003",

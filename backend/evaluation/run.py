@@ -22,12 +22,14 @@ import json
 import statistics
 import sys
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
 from app.agents.runner import run_agent
 from app.core.config import Settings, get_settings
+from app.database.executor import execute_readonly
+from app.models import TABLE_LOAD_ORDER
 from app.services.llm import get_provider
 from evaluation.cases import CASES, Category, EvalCase
 from evaluation.grader import CaseResult, Outcome, grade
@@ -167,6 +169,37 @@ def _print_report(
     print("=" * width + "\n")
 
 
+def _resolve_row_counts(cases: list[EvalCase]) -> list[EvalCase]:
+    """Turn `expect_row_count_of` into a concrete range from the live warehouse.
+
+    "How many customers do we have?" has exactly one correct answer, but it is
+    a fact about the seeded data, not a constant: CI seeds a smaller warehouse
+    than the generator's default. Reading the count here keeps the expectation
+    exact at any size, while still deriving it from deterministic SQL rather
+    than from whatever the agent replied.
+
+    The table name is checked against the model layer's own list before it is
+    interpolated. Nothing here is attacker-controlled, but composing SQL from a
+    validated identifier costs one line and does not invite a later change to
+    make it dynamic.
+    """
+    resolved: list[EvalCase] = []
+    for case in cases:
+        if case.expect_row_count_of is None:
+            resolved.append(case)
+            continue
+
+        needle, table = case.expect_row_count_of
+        if table not in TABLE_LOAD_ORDER:
+            raise ValueError(f"case {case.id}: unknown table {table!r}")
+
+        result = execute_readonly(f"SELECT count(*) FROM {table}", max_rows=1)  # noqa: S608
+        exact = float(result.rows[0][0])
+        resolved.append(replace(case, expect_value_range=(needle, exact - 0.5, exact + 0.5)))
+
+    return resolved
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m evaluation.run",
@@ -201,6 +234,8 @@ def main(argv: list[str] | None = None) -> int:
     if not cases:
         print("No cases matched.", file=sys.stderr)
         return 2
+
+    cases = _resolve_row_counts(cases)
 
     provider = get_provider()
     simulated = not provider.is_live
