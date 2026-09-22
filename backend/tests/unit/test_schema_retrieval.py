@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.models import TABLE_LOAD_ORDER
 from app.services.schema import (
     METRICS,
     get_schema,
@@ -22,7 +23,7 @@ from app.services.schema import (
     undocumented_columns,
 )
 
-ALL_TABLES = {"orders", "order_items", "customers", "products", "regions", "employees"}
+ALL_TABLES = set(TABLE_LOAD_ORDER)
 
 
 class TestCatalogueIntegrity:

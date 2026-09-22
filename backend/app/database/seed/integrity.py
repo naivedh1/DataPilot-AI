@@ -130,6 +130,93 @@ def check_no_orphan_items(conn: psycopg.Connection) -> CheckResult:
     )
 
 
+def check_refunds_within_order_total(conn: psycopg.Connection) -> CheckResult:
+    """No order may be refunded for more than it was worth.
+
+    The database cannot express this as a CHECK — it spans rows and tables —
+    so it is asserted here instead.
+    """
+    count = _count(
+        conn,
+        """
+        SELECT count(*) FROM (
+            SELECT r.order_id
+            FROM refunds r
+            JOIN orders o ON o.id = r.order_id
+            GROUP BY r.order_id, o.total_amount
+            HAVING SUM(r.refund_amount) > o.total_amount
+        ) AS over_refunded
+        """,
+    )
+    return CheckResult(
+        "refunds never exceed the order total",
+        count == 0,
+        "all within total" if count == 0 else f"{count:,} over-refunded orders",
+    )
+
+
+def check_returned_status_matches_refunds(conn: psycopg.Connection) -> CheckResult:
+    """`status = 'returned'` must mean exactly "refunds sum to the total".
+
+    This is the invariant that makes `refunds` the source of truth rather than
+    a second, competing account of what came back. Both directions are checked:
+    a `returned` order that is not fully refunded, and a fully refunded order
+    still marked `completed`, are equally wrong.
+    """
+    count = _count(
+        conn,
+        """
+        SELECT count(*) FROM (
+            SELECT o.id
+            FROM orders o
+            LEFT JOIN refunds r ON r.order_id = o.id
+            GROUP BY o.id, o.status, o.total_amount
+            HAVING (o.status = 'returned')
+                <> (COALESCE(SUM(r.refund_amount), 0) = o.total_amount)
+        ) AS mismatched
+        """,
+    )
+    return CheckResult(
+        "returned status matches refunds exactly",
+        count == 0,
+        "status and refunds agree" if count == 0 else f"{count:,} disagreeing orders",
+    )
+
+
+def check_refunds_not_before_orders(conn: psycopg.Connection) -> CheckResult:
+    """Money cannot come back before it went out."""
+    count = _count(
+        conn,
+        """
+        SELECT count(*) FROM refunds r
+        JOIN orders o ON o.id = r.order_id
+        WHERE r.refund_date < o.order_date
+        """,
+    )
+    return CheckResult(
+        "no refund predates its order",
+        count == 0,
+        "all refunds follow their order" if count == 0 else f"{count:,} impossible refunds",
+    )
+
+
+def check_refunds_only_on_fulfilled_orders(conn: psycopg.Connection) -> CheckResult:
+    """A cancelled or pending order has nothing to refund."""
+    count = _count(
+        conn,
+        """
+        SELECT count(*) FROM refunds r
+        JOIN orders o ON o.id = r.order_id
+        WHERE o.status NOT IN ('completed', 'returned')
+        """,
+    )
+    return CheckResult(
+        "refunds only against fulfilled orders",
+        count == 0,
+        "no refunds on unfulfilled orders" if count == 0 else f"{count:,} invalid refunds",
+    )
+
+
 def check_orders_after_signup(conn: psycopg.Connection) -> CheckResult:
     """No customer may have ordered before they existed."""
     impossible = _count(
@@ -245,6 +332,10 @@ def run_all(
         check_totals_are_derived(conn),
         check_subtotals_match_lines(conn),
         check_no_orphan_items(conn),
+        check_refunds_within_order_total(conn),
+        check_returned_status_matches_refunds(conn),
+        check_refunds_not_before_orders(conn),
+        check_refunds_only_on_fulfilled_orders(conn),
         check_orders_after_signup(conn),
         check_no_presale_products(conn),
         check_date_span(conn, window_start, window_end),

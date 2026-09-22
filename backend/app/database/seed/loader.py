@@ -23,6 +23,7 @@ from app.database.seed.dataset import (
     ORDER_COLUMNS,
     ORDER_ITEM_COLUMNS,
     PRODUCT_COLUMNS,
+    REFUND_COLUMNS,
     REGION_COLUMNS,
     GeneratedDataset,
 )
@@ -37,6 +38,7 @@ TABLE_COLUMNS: dict[str, tuple[str, ...]] = {
     "employees": EMPLOYEE_COLUMNS,
     "orders": ORDER_COLUMNS,
     "order_items": ORDER_ITEM_COLUMNS,
+    "refunds": REFUND_COLUMNS,
 }
 
 
@@ -116,6 +118,7 @@ def load(conn: psycopg.Connection, dataset: GeneratedDataset) -> dict[str, int]:
         "employees": (employee.to_row() for employee in dataset.employees),
         "orders": dataset.orders,
         "order_items": dataset.order_items,
+        "refunds": dataset.refunds,
     }
 
     written: dict[str, int] = {}

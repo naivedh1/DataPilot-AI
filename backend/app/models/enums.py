@@ -86,6 +86,25 @@ class Department(StrEnum):
     ENGINEERING = "Engineering"
 
 
+class RefundReason(StrEnum):
+    """Why money went back to a customer.
+
+    A refund is not a single phenomenon: "Damaged" and "Faulty" point at
+    fulfilment and quality respectively, while "Changed mind" is demand-side
+    and largely unpreventable. Collapsing them into one bucket makes a refund
+    spike uninvestigable, which is the opposite of what this warehouse is for.
+    """
+
+    DAMAGED_IN_TRANSIT = "Damaged in transit"
+    FAULTY = "Faulty"
+    NOT_AS_DESCRIBED = "Not as described"
+    WRONG_ITEM_SENT = "Wrong item sent"
+    SIZE_OR_FIT = "Size or fit"
+    LATE_DELIVERY = "Late delivery"
+    CHANGED_MIND = "Changed mind"
+    GOODWILL = "Goodwill"
+
+
 def values(enum_cls: type[StrEnum]) -> list[str]:
     """Return an enum's members as plain strings, in declaration order.
 

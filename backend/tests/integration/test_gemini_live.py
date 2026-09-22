@@ -16,13 +16,14 @@ from __future__ import annotations
 import pytest
 
 from app.core.config import get_settings
+from app.models import TABLE_LOAD_ORDER
 from app.schemas.agent import PlannerDecision, SQLGeneration
 from app.services.llm import build_provider
 from app.services.sql.validator import validate
 
 pytestmark = [pytest.mark.integration, pytest.mark.llm]
 
-WAREHOUSE = frozenset({"orders", "order_items", "customers", "products", "regions", "employees"})
+WAREHOUSE = frozenset(TABLE_LOAD_ORDER)
 
 
 @pytest.fixture(scope="module")

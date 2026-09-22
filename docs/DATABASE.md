@@ -1,6 +1,6 @@
 # DataPilot AI — Database
 
-The analytics warehouse the agent queries. PostgreSQL 17.11, six tables, ~170k
+The analytics warehouse the agent queries. PostgreSQL 17.11, seven tables, ~350k
 rows, two years of synthetic history generated deterministically from a seed.
 
 ---
@@ -92,7 +92,7 @@ Tables are defined once, as SQLAlchemy models, and created from that metadata:
 | `app/models/base.py` | Declarative base, constraint naming convention, money types |
 | `app/models/enums.py` | Controlled vocabularies (segments, statuses, channels) |
 | `app/models/dimensions.py` | `regions`, `products`, `customers`, `employees` |
-| `app/models/facts.py` | `orders`, `order_items` |
+| `app/models/facts.py` | `orders`, `order_items`, `refunds` |
 
 There is no separate hand-written DDL to drift out of sync. Phase 4's schema
 retrieval reads the same metadata, so what the language model is told about the
@@ -145,6 +145,7 @@ It is verified after every load by `app/database/seed/integrity.py`.
 | `orders` → `customers` | RESTRICT | Order history must survive an attempt to delete a customer. |
 | `orders` → `regions` | RESTRICT | Same. |
 | `order_items` → `products` | RESTRICT | A product with sales history must not be deletable. |
+| `refunds` → `orders` | **CASCADE** | A refund is meaningless without the order it reverses. |
 | `customers` → `regions` | RESTRICT | Deleting a region must not silently delete its customers. |
 | `employees` → `regions` | RESTRICT | Same. |
 
@@ -230,15 +231,50 @@ seed produces byte-identical output on any machine on any day.
 | Table | Rows |
 |---|---|
 | `regions` | 12 |
-| `products` | 419 |
-| `customers` | 5,000 |
+| `products` | 300 |
+| `customers` | 10,000 |
 | `employees` | 140 |
-| `orders` | 50,000 |
-| `order_items` | ~114,000 |
+| `orders` | 100,000 |
+| `order_items` | ~228,000 |
+| `refunds` | ~11,600 |
 
 Window: **2024-09-01 to 2026-08-31** (730 days), pinned to fixed dates and never
 derived from `date.today()`. A sliding window would invalidate the evaluation
 suite's expected answers the moment the calendar turned.
+
+### Refunds are the source of truth for money returned
+
+`orders.status = 'returned'` is **derived**, not independent. An order is
+`returned` exactly when its refunds sum to `total_amount`; a partially refunded
+order stays `completed` and carries refund rows for the part returned.
+
+```
+SUM(refunds.refund_amount) per order <= orders.total_amount
+orders.status = 'returned'  <=>  that sum equals total_amount
+```
+
+Neither can be a CHECK constraint — both span rows and tables — so both are
+asserted after every load by `seed/integrity.py`. A trigger would slow the
+largest COPY in the warehouse to guarantee something the load already
+guarantees.
+
+Two consequences worth knowing before writing a refund query:
+
+- **Refunds lag their orders** by 2–45 days, so a refund often lands in a later
+  month than the sale it reverses. Group by `refund_date` unless the question
+  is explicitly about the period of the original sale.
+- **An order can have several refunds.** Joining `orders` to `refunds` and
+  summing `total_amount` double-counts such an order; joining `refunds` through
+  to `order_items` multiplies each refund by the order's line count. To split
+  refunds by category, allocate each refund across the order's lines in
+  proportion to line value:
+
+  ```sql
+  SUM(r.refund_amount * oi.line_total / NULLIF(o.subtotal, 0))
+  ```
+
+  That reconciles exactly to `SUM(refund_amount)`; the naive join overstates it
+  by roughly 3.5x on this dataset.
 
 ### Business patterns
 

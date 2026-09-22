@@ -334,6 +334,48 @@ CASES: tuple[EvalCase, ...] = (
         expect_rows=1,
     ),
     EvalCase(
+        id="ref-001",
+        question="How much did we refund in total?",
+        category=Category.RETURNS,
+        intent="aggregation",
+        expect_tables=frozenset({"refunds"}),
+        expect_rows=1,
+        expect_value_range=("refund", 1.0, REVENUE_MAX),
+        notes="SUM(refund_amount). Needs no join — refunds stand on their own.",
+    ),
+    EvalCase(
+        id="ref-002",
+        question="What are the most common refund reasons?",
+        category=Category.RETURNS,
+        intent="ranking",
+        expect_tables=frozenset({"refunds"}),
+        expect_rows=8,
+        expect_sorted_desc=True,
+        notes="Eight reasons exist; all appear at this scale.",
+    ),
+    EvalCase(
+        id="ref-003",
+        question="Show me refunds by month",
+        category=Category.RETURNS,
+        intent="trend",
+        expect_tables=frozenset({"refunds"}),
+        expect_min_rows=12,
+        notes=(
+            "Must group by refund_date, not the order date. Refunds land in a "
+            "later month than the sale they reverse."
+        ),
+    ),
+    EvalCase(
+        id="ref-004",
+        question="Which product category has the highest refunds?",
+        category=Category.RETURNS,
+        intent="ranking",
+        expect_tables=frozenset({"refunds", "orders", "order_items", "products"}),
+        expect_min_rows=3,
+        expect_sorted_desc=True,
+        notes="Apparel should lead, per CATEGORY_REFUND_BIAS.",
+    ),
+    EvalCase(
         id="ret-003",
         question="Show me order counts by status",
         category=Category.ORDERS,

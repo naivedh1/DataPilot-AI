@@ -76,6 +76,13 @@ ORDER_ITEM_COLUMNS = (
     "discount_amount",
     "line_total",
 )
+REFUND_COLUMNS = (
+    "id",
+    "order_id",
+    "refund_date",
+    "refund_amount",
+    "refund_reason",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +211,7 @@ class GeneratedDataset:
     employees: list[GenEmployee] = field(default_factory=list)
     orders: list[tuple[object, ...]] = field(default_factory=list)
     order_items: list[tuple[object, ...]] = field(default_factory=list)
+    refunds: list[tuple[object, ...]] = field(default_factory=list)
     anomalies: list[ResolvedAnomaly] = field(default_factory=list)
 
     def counts(self) -> dict[str, int]:
@@ -215,4 +223,5 @@ class GeneratedDataset:
             "employees": len(self.employees),
             "orders": len(self.orders),
             "order_items": len(self.order_items),
+            "refunds": len(self.refunds),
         }

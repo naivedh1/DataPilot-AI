@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import pytest
 
+from app.models import TABLE_LOAD_ORDER
 from app.services.sql.validator import validate
 
-WAREHOUSE = frozenset({"orders", "order_items", "customers", "products", "regions", "employees"})
+#: The warehouse's tables, derived rather than restated: a table added to
+#: the model layer must not silently fall outside the validator's allow-list.
+WAREHOUSE = frozenset(TABLE_LOAD_ORDER)
 
 
 class TestValidQueries:

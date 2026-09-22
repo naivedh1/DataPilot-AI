@@ -15,6 +15,7 @@ from app.agents.runner import AgentRun
 from app.api.routes import query as query_routes
 from app.core.config import AppEnv, Settings
 from app.main import create_app
+from app.models import TABLE_LOAD_ORDER
 from app.services.conversations import ConversationStore, get_store
 
 
@@ -243,7 +244,7 @@ class TestSchemaEndpoint:
     def test_all_tables_are_described(self, client):
         body = client.get("/api/schema").json()
         names = {table["name"] for table in body["tables"]}
-        assert names == {"orders", "order_items", "customers", "products", "regions", "employees"}
+        assert names == set(TABLE_LOAD_ORDER)
 
     def test_allowed_values_are_exposed(self, client):
         """So a user can see which literals are valid, and so can the model."""

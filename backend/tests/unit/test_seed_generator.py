@@ -14,7 +14,7 @@ import pytest
 
 from app.database.seed import anomalies as anomaly_rules
 from app.database.seed.config import GenerationConfig
-from app.database.seed.dataset import ORDER_COLUMNS, ORDER_ITEM_COLUMNS
+from app.database.seed.dataset import ORDER_COLUMNS, ORDER_ITEM_COLUMNS, REFUND_COLUMNS
 from app.database.seed.generator import generate
 from app.database.seed.patterns import ProductArchetype
 from app.models.enums import (
@@ -23,6 +23,7 @@ from app.models.enums import (
     CustomerSegment,
     Department,
     OrderStatus,
+    RefundReason,
     SalesChannel,
 )
 
@@ -32,6 +33,7 @@ SMALL = GenerationConfig(n_customers=400, n_orders=2_500, n_products=120, n_empl
 # invalidate every assertion below.
 O = {name: index for index, name in enumerate(ORDER_COLUMNS)}  # noqa: E741
 I = {name: index for index, name in enumerate(ORDER_ITEM_COLUMNS)}  # noqa: E741
+R = {name: index for index, name in enumerate(REFUND_COLUMNS)}
 
 
 @pytest.fixture(scope="module")
@@ -313,3 +315,92 @@ class TestAnomalyPlanting:
             1 for row in dataset.orders if before_start <= row[O["order_date"]] < spec.start
         )
         assert inside > before * 1.4, f"flash sale not visible: {inside} vs {before}"
+
+
+class TestRefunds:
+    """Refunds are the source of truth for money returned.
+
+    `orders.status = 'returned'` is a denormalisation of "the refunds sum to
+    the total". These assertions are what stop the two drifting apart — the
+    exact failure the refunds table was added to prevent.
+    """
+
+    @staticmethod
+    def _refunded_by_order(dataset) -> dict[int, Decimal]:
+        totals: dict[int, Decimal] = {}
+        for row in dataset.refunds:
+            order_id = row[R["order_id"]]
+            totals[order_id] = totals.get(order_id, Decimal("0.00")) + row[R["refund_amount"]]
+        return totals
+
+    def test_refunds_are_generated(self, dataset):
+        assert dataset.refunds, "no refunds generated at all"
+
+    def test_every_refund_amount_is_positive(self, dataset):
+        assert all(row[R["refund_amount"]] > 0 for row in dataset.refunds)
+
+    def test_no_order_is_over_refunded(self, dataset):
+        totals = {row[O["id"]]: row[O["total_amount"]] for row in dataset.orders}
+        over = [
+            order_id
+            for order_id, refunded in self._refunded_by_order(dataset).items()
+            if refunded > totals[order_id]
+        ]
+        assert not over, f"{len(over)} orders refunded beyond their total"
+
+    def test_returned_status_means_fully_refunded(self, dataset):
+        """Both directions. A `returned` order with no refunds, and a fully
+        refunded order still marked `completed`, are equally inconsistent."""
+        totals = {row[O["id"]]: row[O["total_amount"]] for row in dataset.orders}
+        refunded = self._refunded_by_order(dataset)
+
+        fully_refunded = {
+            order_id for order_id, amount in refunded.items() if amount == totals[order_id]
+        }
+        marked_returned = {
+            row[O["id"]] for row in dataset.orders if row[O["status"]] == OrderStatus.RETURNED
+        }
+        assert fully_refunded == marked_returned
+
+    def test_refunds_only_against_fulfilled_orders(self, dataset):
+        status = {row[O["id"]]: row[O["status"]] for row in dataset.orders}
+        bad = {
+            order_id
+            for order_id in self._refunded_by_order(dataset)
+            if status[order_id] not in (OrderStatus.COMPLETED, OrderStatus.RETURNED)
+        }
+        assert not bad, "refunds issued against cancelled or pending orders"
+
+    def test_no_refund_predates_its_order(self, dataset):
+        order_date = {row[O["id"]]: row[O["order_date"]] for row in dataset.orders}
+        assert all(
+            row[R["refund_date"]] >= order_date[row[R["order_id"]]] for row in dataset.refunds
+        )
+
+    def test_refunds_stay_within_the_window(self, dataset):
+        assert all(row[R["refund_date"]] <= SMALL.window_end for row in dataset.refunds)
+
+    def test_partial_refunds_exist(self, dataset):
+        """The whole reason for a refunds table rather than a boolean column."""
+        totals = {row[O["id"]]: row[O["total_amount"]] for row in dataset.orders}
+        partial = [
+            order_id
+            for order_id, refunded in self._refunded_by_order(dataset).items()
+            if refunded < totals[order_id]
+        ]
+        assert partial, "no partial refunds — a returned flag would suffice"
+
+    def test_reasons_are_from_the_controlled_vocabulary(self, dataset):
+        allowed = {member.value for member in RefundReason}
+        assert {row[R["refund_reason"]] for row in dataset.refunds} <= allowed
+
+    def test_some_orders_are_refunded_more_than_once(self, dataset):
+        counts: dict[int, int] = {}
+        for row in dataset.refunds:
+            counts[row[R["order_id"]]] = counts.get(row[R["order_id"]], 0) + 1
+        assert any(n > 1 for n in counts.values()), (
+            "no order has multiple refunds, so SUM() is indistinguishable from MAX()"
+        )
+
+    def test_refunds_are_deterministic(self, dataset):
+        assert generate(SMALL).refunds == generate(SMALL).refunds

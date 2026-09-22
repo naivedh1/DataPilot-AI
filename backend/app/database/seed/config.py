@@ -43,9 +43,9 @@ class GenerationConfig:
     window_end: dt.date = DEFAULT_WINDOW_END
     signup_start: dt.date = DEFAULT_SIGNUP_START
 
-    n_customers: int = 5_000
-    n_orders: int = 50_000
-    n_products: int = 420
+    n_customers: int = 10_000
+    n_orders: int = 100_000
+    n_products: int = 300
     n_employees: int = 140
 
     #: Compound annual growth applied to daily order intensity. 22% a year is

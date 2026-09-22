@@ -148,6 +148,43 @@ TABLES: dict[str, TableDoc] = {
             "order_items multiplies each order's total by its line count.",
         ),
     ),
+    "refunds": TableDoc(
+        description=(
+            "One row per refund issued against an order. An order may be "
+            "refunded more than once, on different dates and for different "
+            "reasons, so refunds must be SUMmed per order, never assumed to "
+            "be one row."
+        ),
+        synonyms=("refund", "refunds", "money back", "chargeback", "credit", "return"),
+        columns={
+            "id": ColumnDoc("Primary key."),
+            "order_id": ColumnDoc("The order being refunded."),
+            "refund_date": ColumnDoc(
+                "When the refund was issued. This is later than the order date, "
+                "often in a different month, so refunds belong to the period "
+                "they were issued in, not the period of the original sale.",
+                ("refunded on", "refund month", "when refunded"),
+            ),
+            "refund_amount": ColumnDoc(
+                "Money returned on this refund row.",
+                ("refunded", "refund value", "money back"),
+            ),
+            "refund_reason": ColumnDoc(
+                "Why the refund happened. Distinguishes preventable causes "
+                "(Damaged in transit, Faulty, Wrong item sent) from demand-side "
+                "ones (Changed mind, Size or fit).",
+                ("reason", "refund reason", "why"),
+            ),
+        },
+        notes=(
+            "A refund can be partial. orders.status = 'returned' means the "
+            "refunds for that order sum to its total_amount; a partially "
+            "refunded order is still 'completed' and still has refund rows. "
+            "Counting 'returned' orders therefore undercounts refunds.",
+            "Attribute refunds by refund_date unless the question explicitly "
+            "asks about the period of the original sale.",
+        ),
+    ),
     "customers": TableDoc(
         description="One row per customer account, with segment and acquisition attributes.",
         synonyms=("customer", "client", "account", "buyer", "user"),
@@ -253,7 +290,29 @@ METRICS: tuple[MetricDoc, ...] = (
         synonyms=("revenue", "sales", "turnover", "income", "takings", "gmv"),
         caveat=(
             "Excludes returned and cancelled orders. If a question explicitly "
-            "asks about gross or booked revenue, drop the status filter and say so."
+            "asks about gross or booked revenue, drop the status filter and say so. "
+            "Because fully refunded orders are 'returned', this already nets out "
+            "full refunds — but NOT partial refunds, which sit on orders that are "
+            "still 'completed'. Use net_revenue when the question is about money "
+            "actually kept."
+        ),
+    ),
+    MetricDoc(
+        name="net_revenue",
+        description="Completed revenue after deducting every refund, full or partial.",
+        expression=(
+            "SUM(orders.total_amount) FILTER (WHERE orders.status = 'completed') "
+            "- COALESCE((SELECT SUM(r.refund_amount) FROM refunds r "
+            "JOIN orders o2 ON o2.id = r.order_id WHERE o2.status = 'completed'), 0)"
+        ),
+        required_tables=("orders", "refunds"),
+        synonyms=("net revenue", "net sales", "revenue after refunds", "money kept"),
+        caveat=(
+            "Differs from revenue only by partial refunds; full refunds are "
+            "already excluded by the status filter. Deducting all refunds from "
+            "revenue would double-count the full ones. The refund deduction must "
+            "be aggregated separately, not joined — an order with two refunds "
+            "would otherwise duplicate its total_amount."
         ),
     ),
     MetricDoc(
@@ -284,13 +343,48 @@ METRICS: tuple[MetricDoc, ...] = (
     ),
     MetricDoc(
         name="return_rate",
-        description="Share of orders that were returned.",
+        description="Share of orders refunded in full.",
         expression=(
             "COUNT(*) FILTER (WHERE orders.status = 'returned')::numeric / NULLIF(COUNT(*), 0)"
         ),
         required_tables=("orders",),
-        synonyms=("return rate", "returns", "refund rate"),
-        caveat="Denominator is all orders, including cancelled ones.",
+        synonyms=("return rate", "returns", "fully returned"),
+        caveat=(
+            "Counts orders, not money, and only fully refunded ones. A "
+            "partially refunded order is 'completed' and is not counted here. "
+            "For money returned use refund_amount or refund_rate."
+        ),
+    ),
+    MetricDoc(
+        name="refund_amount",
+        description="Total money returned to customers.",
+        expression="SUM(refunds.refund_amount)",
+        required_tables=("refunds",),
+        synonyms=("refunds", "refunded", "money refunded", "refund value"),
+        caveat=(
+            "Group by refunds.refund_date, not orders.order_date, unless the "
+            "question asks about the period of the original sale. Join to "
+            "orders only when the question needs order attributes; the join "
+            "is not needed to total refunds."
+        ),
+    ),
+    MetricDoc(
+        name="refund_rate",
+        description="Money refunded as a share of gross completed sales.",
+        expression=(
+            "SUM(refunds.refund_amount) / NULLIF(SUM(orders.total_amount) "
+            "FILTER (WHERE orders.status IN ('completed', 'returned')), 0)"
+        ),
+        required_tables=("refunds", "orders"),
+        synonyms=("refund rate", "refund ratio", "refund percentage"),
+        caveat=(
+            "This is a value ratio, not a count ratio — it is not return_rate. "
+            "The denominator includes returned orders, because an order that "
+            "was fully refunded was still a sale that was made. Beware joining "
+            "orders to refunds directly and then summing total_amount: an order "
+            "with two refunds would be counted twice. Aggregate each side "
+            "separately."
+        ),
     ),
     MetricDoc(
         name="cancellation_rate",

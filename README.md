@@ -349,7 +349,7 @@ one that is honest about its edges.
 - **Conversation history is in-process.** Bounded and LRU-evicted, but it does
   not survive a restart and does not work across replicas.
 - **Schema retrieval is lexical, not semantic.** Deterministic and fast, and
-  correct for six tables; a forty-table warehouse would want embeddings. The
+  correct for seven tables; a forty-table warehouse would want embeddings. The
   `retrieve()` interface is what would be swapped.
 - **No authentication.** Single-user by design. Multi-tenancy would need auth
   plus row-level security.

@@ -285,6 +285,133 @@ _ABSENT_CONCEPTS: tuple[str, ...] = (
 )
 
 
+#: Dimensions available on the refunds spine. Category-level entries carry the
+#: joins needed to reach products; the rest reach only as far as orders.
+_REFUND_DIMENSIONS: tuple[tuple[tuple[str, ...], str, str, tuple[str, ...]], ...] = (
+    (("reason", "refund reason", "why"), "r.refund_reason", "refund_reason", ()),
+    (("subcategory", "sub-category"), "p.subcategory", "subcategory", ("items",)),
+    (("category",), "p.category", "category", ("items",)),
+    (("product",), "p.name", "product", ("items",)),
+    (("region",), "rg.name", "region", ("regions",)),
+    (("segment", "customer segment"), "c.customer_segment", "segment", ("customers",)),
+    (("status",), "o.status", "status", ()),
+)
+
+
+def _find_refund_dimension(lowered: str) -> tuple[str, str, tuple[str, ...]] | None:
+    for synonyms, expression, alias, needs in _REFUND_DIMENSIONS:
+        if any(term in lowered for term in synonyms):
+            return expression, alias, needs
+    return None
+
+
+def _build_refund_sql(question: str, lowered: str) -> SQLGeneration | None:
+    """Compose SQL for a refund question, on the refunds spine.
+
+    Refunds are their own fact table, not an attribute of orders, and the
+    difference matters arithmetically. An order can carry several refunds, so
+    reaching them by joining out from orders double-counts the order; and
+    reaching categories by joining refunds to order_items multiplies each
+    refund by the order's line count. Both produce a number that looks
+    plausible and is wrong, which is the failure mode this project exists to
+    avoid.
+    """
+    dimension = _find_refund_dimension(lowered)
+    grain = _find_grain(question)
+    counting = "how many" in lowered or "most common" in lowered or "count" in lowered
+
+    # "Refund rate" is a value ratio, not a count of returned orders, and is
+    # deliberately distinct from return_rate.
+    if "refund rate" in lowered and dimension is None and grain is None:
+        return SQLGeneration(
+            sql="\n".join(
+                [
+                    "SELECT ROUND(100.0 * (SELECT SUM(r.refund_amount) FROM refunds r)",
+                    "    / NULLIF(SUM(o.total_amount) FILTER "
+                    "(WHERE o.status IN ('completed', 'returned')), 0), 2) "
+                    "AS refund_rate_pct",
+                    "FROM orders o",
+                ]
+            ),
+            tables_used=["refunds", "orders"],
+            metrics=["refund_rate"],
+            reasoning_summary=(
+                "Refunded value over gross fulfilled sales. Each side is aggregated "
+                "separately so an order with two refunds is not counted twice."
+            ),
+            confidence=0.55,
+        )
+
+    needs = set(dimension[2]) if dimension else set()
+    joins: list[str] = []
+    # Any dimension beyond the reason itself has to reach orders first.
+    if needs or (dimension and dimension[2]):
+        joins.append("JOIN orders o ON o.id = r.order_id")
+    if "regions" in needs:
+        joins.append("JOIN regions rg ON rg.id = o.shipping_region_id")
+    if "customers" in needs:
+        joins.append("JOIN customers c ON c.id = o.customer_id")
+    if "items" in needs:
+        joins.append("JOIN order_items oi ON oi.order_id = o.id")
+        joins.append("JOIN products p ON p.id = oi.product_id")
+
+    if counting:
+        measure, alias = "COUNT(*)", "refunds"
+    elif "items" in needs:
+        # Allocate each refund across the order's lines in proportion to line
+        # value. Summing refund_amount here would repeat the whole refund on
+        # every line of the order.
+        measure = "ROUND(SUM(r.refund_amount * oi.line_total / NULLIF(o.subtotal, 0)), 2)"
+        alias = "refund_amount"
+    else:
+        measure, alias = "SUM(r.refund_amount)", "refund_amount"
+
+    select_parts: list[str] = []
+    group_parts: list[str] = []
+    if grain:
+        select_parts.append(f"date_trunc('{grain}', r.refund_date)::date AS period")
+        group_parts.append("period")
+    if dimension:
+        select_parts.append(f"{dimension[0]} AS {dimension[1]}")
+        group_parts.append(dimension[0])
+
+    select_parts.append(f"{measure} AS {alias}")
+
+    lines = ["SELECT " + ", ".join(select_parts), "FROM refunds r"]
+    lines.extend(joins)
+
+    if group_parts:
+        lines.append("GROUP BY " + ", ".join(group_parts))
+        lines.append("ORDER BY period" if grain else f"ORDER BY {alias} DESC")
+
+    limit = _top_n(question)
+    if limit and not grain:
+        lines.append(f"LIMIT {limit}")
+
+    tables = ["refunds"]
+    if joins:
+        tables.append("orders")
+    if "regions" in needs:
+        tables.append("regions")
+    if "customers" in needs:
+        tables.append("customers")
+    if "items" in needs:
+        tables.extend(["order_items", "products"])
+
+    return SQLGeneration(
+        sql="\n".join(lines),
+        tables_used=tables,
+        metrics=["refund_amount"] if alias == "refund_amount" else ["refund_count"],
+        reasoning_summary=(
+            "Totalled refunds on the refunds table, grouped by refund_date so "
+            "refunds land in the period they were issued."
+            if grain
+            else "Totalled refunds directly on the refunds table."
+        ),
+        confidence=0.55,
+    )
+
+
 def build_sql(question: str) -> SQLGeneration | None:
     """Compose SQL from the question's grammar.
 
@@ -298,6 +425,11 @@ def build_sql(question: str) -> SQLGeneration | None:
     # answered by narrowing the grammar — it has to be declined.
     if any(concept in lowered for concept in _ABSENT_CONCEPTS):
         return None
+
+    # Refund questions run on the refunds spine. Reaching refunds from the
+    # orders side double-counts orders that were refunded more than once.
+    if "refund" in lowered:
+        return _build_refund_sql(question, lowered)
 
     # Employee questions do not touch the orders spine at all.
     if "employee" in lowered or "headcount" in lowered or "staff" in lowered:

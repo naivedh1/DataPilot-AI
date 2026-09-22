@@ -10,6 +10,9 @@ from app.models import TABLE_LOAD_ORDER
 
 pytestmark = pytest.mark.integration
 
+#: Spelled out rather than derived from TABLE_LOAD_ORDER on purpose: this is
+#: the independent restatement that makes adding or dropping a table a
+#: deliberate act. Deriving it would make the comparison below tautological.
 EXPECTED_TABLES = {
     "regions",
     "products",
@@ -17,6 +20,7 @@ EXPECTED_TABLES = {
     "employees",
     "orders",
     "order_items",
+    "refunds",
 }
 
 
@@ -30,7 +34,7 @@ def _rows(conn: Any, query: str, params: tuple[Any, ...] | None = None) -> list[
 
 
 class TestTables:
-    def test_all_six_warehouse_tables_exist(self, admin_conn):
+    def test_all_warehouse_tables_exist(self, admin_conn):
         found = {
             row[0]
             for row in _rows(

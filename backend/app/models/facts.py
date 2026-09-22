@@ -33,7 +33,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, Money, TimestampMixin
-from app.models.enums import OrderStatus, SalesChannel, values
+from app.models.enums import OrderStatus, RefundReason, SalesChannel, values
 
 if TYPE_CHECKING:
     from app.models.dimensions import Customer, Product, Region
@@ -54,6 +54,13 @@ class Order(Base, TimestampMixin):
     Note that `status` separates `completed` from `returned`. Revenue analysis
     should normally restrict to `completed`; treating the two as equivalent
     silently inflates revenue by the return rate.
+
+    `returned` is *derived*, not independent: an order is `returned` exactly
+    when its refunds sum to `total_amount`. A partially refunded order stays
+    `completed` and carries refund rows for the part returned. The `refunds`
+    table is therefore the source of truth for money returned, and `status`
+    is a convenience denormalisation of the full-refund case. The equivalence
+    is asserted after every load — see `seed/integrity.py`.
     """
 
     __tablename__ = "orders"
@@ -81,6 +88,9 @@ class Order(Base, TimestampMixin):
     customer: Mapped[Customer] = relationship(back_populates="orders")
     shipping_region: Mapped[Region] = relationship(foreign_keys=[shipping_region_id])
     items: Mapped[list[OrderItem]] = relationship(
+        back_populates="order", cascade="all, delete-orphan"
+    )
+    refunds: Mapped[list[Refund]] = relationship(
         back_populates="order", cascade="all, delete-orphan"
     )
 
@@ -165,4 +175,56 @@ class OrderItem(Base):
         Index("ix_order_items_order_id", "order_id"),
         # Product-level revenue and ranking questions.
         Index("ix_order_items_product_id", "product_id"),
+    )
+
+
+class Refund(Base):
+    """Money returned to a customer against an order.
+
+    Many-to-one with `orders`: a single order can be refunded more than once,
+    for different reasons and on different dates. That is why this is a table
+    and not a `refund_amount` column — a column cannot express "half of it came
+    back damaged in March and the rest was a goodwill gesture in April", and
+    flattening it loses the reason, which is what makes a refund spike
+    diagnosable.
+
+    Two invariants the database cannot express as CHECK constraints, because
+    both span rows and tables:
+
+        SUM(refunds.refund_amount) per order <= orders.total_amount
+        orders.status = 'returned'  <=>  that sum equals total_amount
+
+    They are enforced by the generator and verified after every load. A CHECK
+    cannot see another table, and a trigger would slow COPY on the largest
+    load in the warehouse for a guarantee the load already makes.
+    """
+
+    __tablename__ = "refunds"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    order_id: Mapped[int] = mapped_column(
+        # CASCADE, as for order_items: a refund is meaningless without the
+        # order it reverses.
+        ForeignKey("orders.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    refund_date: Mapped[dt.date] = mapped_column(Date, nullable=False)
+    refund_amount: Mapped[Money] = mapped_column(nullable=False)
+    refund_reason: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    order: Mapped[Order] = relationship(back_populates="refunds")
+
+    __table_args__ = (
+        # A zero-value refund is not a refund; a negative one is a charge.
+        CheckConstraint("refund_amount > 0", name="refund_amount_positive"),
+        CheckConstraint(
+            _in_list("refund_reason", values(RefundReason)), name="refund_reason_known"
+        ),
+        # The join back to orders, and per-order refund totals.
+        Index("ix_refunds_order_id", "order_id"),
+        # "Refunds in August" is a first-class question, and refund_date is
+        # deliberately not order_date — a refund lands in a later period than
+        # the sale it reverses, which is exactly the subtlety worth testing.
+        Index("ix_refunds_refund_date", "refund_date"),
+        Index("ix_refunds_reason", "refund_reason"),
     )

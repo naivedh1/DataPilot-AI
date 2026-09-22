@@ -332,17 +332,65 @@ def category_multiplier(category: str, month: int) -> float:
 # ---------------------------------------------------------------------------
 
 #: Baseline status mix for orders old enough to have resolved.
-#: Deliberately uneven — a uniform split would make return-rate analysis
-#: meaningless.
+#:
+#: `returned` is absent on purpose. It is no longer drawn here: an order
+#: becomes `returned` when its refunds sum to its total, so the refund
+#: parameters below decide it. Drawing it independently would let an order be
+#: `returned` with no refund behind it, which is the inconsistency the refunds
+#: table exists to remove.
 RESOLVED_STATUS_WEIGHTS: dict[str, float] = {
-    "completed": 0.855,
+    "completed": 0.921,
     "cancelled": 0.079,
-    "returned": 0.066,
 }
 
-#: Categories return at materially different rates. Apparel returns most
-#: (fit), industrial least (specified before purchase).
-CATEGORY_RETURN_BIAS: dict[str, float] = {
+# ---------------------------------------------------------------------------
+# Refunds
+# ---------------------------------------------------------------------------
+
+#: Share of fulfilled orders attracting at least one refund.
+#:
+#: With FULL_REFUND_SHARE below this reproduces the ~6.6% full-return rate the
+#: warehouse carried before refunds were modelled, so trend comparisons across
+#: the change stay meaningful, and adds partial refunds on top.
+BASE_REFUND_RATE = 0.092
+
+#: Of refunded orders, the share refunded in full — the ones that become
+#: `returned`. The remainder keep `completed` and carry a partial refund,
+#: which is the case a `returned` flag alone can never represent.
+FULL_REFUND_SHARE = 0.78
+
+#: A partial refund returns this share of the order total.
+PARTIAL_REFUND_MIN_SHARE = 0.15
+PARTIAL_REFUND_MAX_SHARE = 0.75
+
+#: Chance a partially refunded order is refunded a second time, later and for
+#: a different reason. Keeps the one-refund-per-order assumption false, which
+#: is what makes SUM() the only correct way to total refunds.
+SECOND_REFUND_CHANCE = 0.12
+
+#: Days between the order and the refund, as a triangular draw. A refund lands
+#: in a later period than the sale it reverses often enough that attributing
+#: refunds to order month rather than refund month is a real analytical error.
+REFUND_DELAY_MIN_DAYS = 2
+REFUND_DELAY_MODE_DAYS = 9
+REFUND_DELAY_MAX_DAYS = 45
+
+#: Why refunds happen. Demand-side reasons dominate; quality and fulfilment
+#: failures are rarer but are the ones a business can act on.
+REFUND_REASON_WEIGHTS: dict[str, float] = {
+    "Changed mind": 0.26,
+    "Size or fit": 0.19,
+    "Damaged in transit": 0.15,
+    "Not as described": 0.13,
+    "Faulty": 0.11,
+    "Wrong item sent": 0.08,
+    "Late delivery": 0.05,
+    "Goodwill": 0.03,
+}
+
+#: Categories are refunded at materially different rates. Apparel most (fit),
+#: industrial least (specified before purchase).
+CATEGORY_REFUND_BIAS: dict[str, float] = {
     "Apparel": 2.4,
     "Consumer Electronics": 1.45,
     "Health & Fitness": 1.2,

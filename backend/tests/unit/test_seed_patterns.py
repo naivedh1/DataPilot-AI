@@ -13,7 +13,7 @@ import pytest
 
 from app.database.seed import anomalies as anomaly_rules
 from app.database.seed.patterns import (
-    CATEGORY_RETURN_BIAS,
+    CATEGORY_REFUND_BIAS,
     CATEGORY_SEASONALITY,
     CHANNEL_PROFILES,
     MONTH_SEASONALITY,
@@ -246,13 +246,13 @@ class TestProductLifecycle:
 
 class TestReturnBias:
     def test_apparel_returns_more_than_industrial(self):
-        assert CATEGORY_RETURN_BIAS["Apparel"] > CATEGORY_RETURN_BIAS["Industrial Equipment"]
+        assert CATEGORY_REFUND_BIAS["Apparel"] > CATEGORY_REFUND_BIAS["Industrial Equipment"]
 
     def test_every_category_has_a_return_bias(self):
-        assert set(CATEGORY_RETURN_BIAS) == set(CATEGORY_SEASONALITY)
+        assert set(CATEGORY_REFUND_BIAS) == set(CATEGORY_SEASONALITY)
 
     def test_biases_are_positive(self):
-        assert all(bias > 0 for bias in CATEGORY_RETURN_BIAS.values())
+        assert all(bias > 0 for bias in CATEGORY_REFUND_BIAS.values())
 
 
 class TestAnomalyRules:

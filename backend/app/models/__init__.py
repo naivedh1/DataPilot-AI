@@ -1,7 +1,7 @@
 """SQLAlchemy ORM models for the synthetic business warehouse.
 
 These describe the *analytics* schema (regions, products, customers, employees,
-orders, order_items) and are the single source of truth for it: tables,
+orders, order_items, refunds) and are the single source of truth for it: tables,
 constraints and indexes are all created from this metadata. Phase 4's schema
 retrieval indexes against the same metadata, so the description the language
 model sees can never drift from what the database actually contains.
@@ -15,9 +15,10 @@ from app.models.enums import (
     CustomerSegment,
     Department,
     OrderStatus,
+    RefundReason,
     SalesChannel,
 )
-from app.models.facts import Order, OrderItem
+from app.models.facts import Order, OrderItem, Refund
 
 #: Insert order. Parents precede children so foreign keys always resolve.
 TABLE_LOAD_ORDER: tuple[str, ...] = (
@@ -27,6 +28,7 @@ TABLE_LOAD_ORDER: tuple[str, ...] = (
     "employees",
     "orders",
     "order_items",
+    "refunds",
 )
 
 __all__ = [
@@ -42,6 +44,8 @@ __all__ = [
     "OrderItem",
     "OrderStatus",
     "Product",
+    "Refund",
+    "RefundReason",
     "Region",
     "SalesChannel",
 ]

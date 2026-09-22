@@ -54,7 +54,9 @@ def generate(config: GenerationConfig | None = None) -> GeneratedDataset:
     )
     customers = build_customers(rng, faker, config, regions)
     employees = build_employees(rng, faker, config, regions)
-    order_rows, item_rows, collapsed = build_orders(rng, config, customers, products, regions)
+    order_rows, item_rows, refund_rows, collapsed = build_orders(
+        rng, config, customers, products, regions
+    )
 
     dataset = GeneratedDataset(
         regions=regions,
@@ -63,6 +65,7 @@ def generate(config: GenerationConfig | None = None) -> GeneratedDataset:
         employees=employees,
         orders=order_rows,
         order_items=item_rows,
+        refunds=refund_rows,
         anomalies=_resolved_anomalies(collapsed),
     )
     logger.info("generation complete: %s", dataset.counts())
