@@ -55,6 +55,8 @@ jobs:
       POSTGRES_ADMIN_PASSWORD: ci-admin-password
       POSTGRES_READONLY_USER: datapilot_readonly
       POSTGRES_READONLY_PASSWORD: ci-readonly-password
+      POSTGRES_AUDIT_USER: datapilot_audit
+      POSTGRES_AUDIT_PASSWORD: ci-audit-password
       # No GEMINI_API_KEY: CI runs against the deterministic offline baseline,
       # so the suite needs no secret, costs nothing, and cannot flake on a
       # third-party outage.

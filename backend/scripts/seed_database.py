@@ -20,6 +20,9 @@ from dataclasses import replace
 import psycopg
 
 from app.core.config import Settings, get_settings
+from app.database.audit import (
+    ensure_audit_schema,
+)
 from app.database.bootstrap import (
     apply_readonly_grants,
     ensure_roles_and_database,
@@ -187,12 +190,24 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  database created        {report.database_created}")
     print(f"  admin role created      {report.admin_role_created}")
     print(f"  readonly role created   {report.readonly_role_created}")
+    print(f"  audit role created      {report.audit_role_created}")
 
     # 4. Schema -------------------------------------------------------------
     engine = create_admin_engine(settings)
     Base.metadata.create_all(engine)
     engine.dispose()
     print(f"  tables ensured          {len(Base.metadata.tables)}")
+
+    # Grants and the audit schema are applied here, before the load, rather
+    # than after it. Both are idempotent and neither depends on there being
+    # any data — and the load stage returns early when the warehouse is
+    # already populated, so anything placed after it would never run on an
+    # existing database. That would mean no audit log without a destructive
+    # reset.
+    apply_readonly_grants(settings)
+    ensure_audit_schema(settings)
+    print(f"  grants applied          {settings.postgres_readonly_user}")
+    print(f"  audit schema ready      {settings.postgres_audit_user}")
 
     # 5. Load ---------------------------------------------------------------
     admin_dsn = to_libpq(settings.admin_dsn)
@@ -218,8 +233,7 @@ def main(argv: list[str] | None = None) -> int:
     for table, count in written.items():
         print(f"  {table:<14} {count:>10,}")
 
-    # 6. Grants -------------------------------------------------------------
-    apply_readonly_grants(settings)
+    # 6. Privilege verification ---------------------------------------------
     privilege_problems = verify_readonly_privileges(settings)
     print("\nSecurity")
     print("-" * 64)
@@ -228,6 +242,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  FAIL  {problem}")
     else:
         print(f"  PASS  {settings.postgres_readonly_user}: SELECT only, no DDL/DML")
+    print(f"  PASS  {settings.postgres_audit_user}: INSERT on audit schema only")
 
     # 7. Integrity ----------------------------------------------------------
     with psycopg.connect(admin_dsn) as conn:

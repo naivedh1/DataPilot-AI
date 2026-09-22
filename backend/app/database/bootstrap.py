@@ -46,6 +46,7 @@ class BootstrapReport:
     database_created: bool
     admin_role_created: bool
     readonly_role_created: bool
+    audit_role_created: bool
     grants_applied: bool
 
 
@@ -96,6 +97,7 @@ def ensure_roles_and_database(settings: Settings) -> BootstrapReport:
     """
     admin_user = settings.postgres_admin_user
     readonly_user = settings.postgres_readonly_user
+    audit_user = settings.postgres_audit_user
     database = settings.postgres_db
 
     with psycopg.connect(to_libpq(settings.superuser_maintenance_dsn), autocommit=True) as conn:
@@ -104,6 +106,12 @@ def ensure_roles_and_database(settings: Settings) -> BootstrapReport:
         )
         readonly_created = _ensure_login_role(
             conn, readonly_user, settings.postgres_readonly_password.get_secret_value()
+        )
+        # The audit writer. Created here so it exists before the audit schema
+        # is built; it receives INSERT on that schema and nothing else — see
+        # `app/database/audit.py`.
+        audit_created = _ensure_login_role(
+            conn, audit_user, settings.postgres_audit_password.get_secret_value()
         )
 
         db_created = False
@@ -121,11 +129,12 @@ def ensure_roles_and_database(settings: Settings) -> BootstrapReport:
         conn.execute(
             sql.SQL("REVOKE ALL ON DATABASE {} FROM PUBLIC").format(sql.Identifier(database))
         )
-        conn.execute(
-            sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
-                sql.Identifier(database), sql.Identifier(readonly_user)
+        for role in (readonly_user, audit_user):
+            conn.execute(
+                sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
+                    sql.Identifier(database), sql.Identifier(role)
+                )
             )
-        )
         conn.execute(
             sql.SQL("GRANT ALL ON DATABASE {} TO {}").format(
                 sql.Identifier(database), sql.Identifier(admin_user)
@@ -136,6 +145,7 @@ def ensure_roles_and_database(settings: Settings) -> BootstrapReport:
         database_created=db_created,
         admin_role_created=admin_created,
         readonly_role_created=readonly_created,
+        audit_role_created=audit_created,
         grants_applied=False,
     )
 
@@ -185,6 +195,20 @@ def apply_readonly_grants(settings: Settings) -> None:
                 sql.Identifier(readonly_user)
             )
         )
+        # The audit writer holds nothing on the warehouse — not even SELECT.
+        # Its only purpose is INSERT into the audit schema, and a log writer
+        # that could read business data would be a second way in.
+        conn.execute(
+            sql.SQL("REVOKE ALL ON ALL TABLES IN SCHEMA public FROM {}").format(
+                sql.Identifier(settings.postgres_audit_user)
+            )
+        )
+        conn.execute(
+            sql.SQL("REVOKE ALL ON SCHEMA public FROM {}").format(
+                sql.Identifier(settings.postgres_audit_user)
+            )
+        )
+
         logger.info("read-only grants applied to %s", readonly_user)
 
 

@@ -108,6 +108,53 @@ permission system.
 
 ---
 
+## 2b. The audit writer
+
+The audit log adds a **write path** to a system whose defining property is
+that generated SQL runs under a role which cannot write. That is a hole in the
+model, and it is made as narrow as it can be rather than waved through.
+
+| Role | Warehouse | `audit` schema |
+|---|---|---|
+| `datapilot_readonly` | SELECT only | **nothing** |
+| `datapilot_audit` | **nothing — not even SELECT** | INSERT only |
+| `datapilot_admin` | owner (seeding only) | owner |
+
+Three properties follow, each asserted by attempting the operation rather than
+by reading the catalog:
+
+- **The writer cannot read its own log.** INSERT without SELECT means it
+  cannot check what it recorded, so it cannot selectively omit. It also cannot
+  UPDATE or DELETE a row it has written.
+- **The writer cannot reach business data.** A log writer holding SELECT on
+  the warehouse would be a second way in. It holds no grant there at all.
+- **Generated SQL cannot reach the log.** The read-only role is explicitly
+  revoked on the audit schema, so a model cannot be talked into mining it for
+  the questions other people have asked.
+
+Catalog inspection alone would not be enough. A grant can be recorded
+correctly and still be reachable through PUBLIC, through role inheritance, or
+through a default privilege added later. `tests/integration/test_audit_boundary.py`
+attempts every access that must fail.
+
+### Why not a file
+
+Appending JSONL to disk would keep the read-only boundary perfectly intact.
+It was rejected because the log exists to support debugging and evaluation,
+and a log that cannot be queried with SQL does not serve that. The
+narrowly-scoped writer is the honest trade.
+
+### Availability over durability
+
+An audit failure **never fails a request**. A user who asked a question and
+got a correct answer must not see an error because the log was unreachable;
+failures are logged as `audit_write_failed` and swallowed.
+
+That is the right default for an analytics assistant and the wrong one for a
+regulated system, where the audit trail is the product and the correct
+behaviour is to refuse the request. The choice is stated here so it can be
+reversed deliberately.
+
 ## 3. Prompt injection
 
 The model can be talked into emitting a destructive payload. That is assumed,

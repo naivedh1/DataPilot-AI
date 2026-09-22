@@ -66,6 +66,11 @@ class Settings(BaseSettings):
     postgres_readonly_password: SecretStr = SecretStr("")
     postgres_admin_user: str = "datapilot_admin"
     postgres_admin_password: SecretStr = SecretStr("")
+    # Audit writer. Holds INSERT on the audit schema and nothing at all on the
+    # warehouse — see `app/database/audit.py` for why it exists separately
+    # rather than reusing the admin role.
+    postgres_audit_user: str = "datapilot_audit"
+    postgres_audit_password: SecretStr = SecretStr("")
     # Cluster superuser. Used only by scripts/seed_database.py to create the two
     # roles above and the database itself; the running application never holds
     # these credentials.
@@ -119,6 +124,11 @@ class Settings(BaseSettings):
     def admin_dsn(self) -> str:
         """Connection string for migrations and seeding only. Never for user SQL."""
         return self._dsn(self.postgres_admin_user, self.postgres_admin_password)
+
+    @property
+    def audit_dsn(self) -> str:
+        """Connection string for the audit writer. Never for user SQL."""
+        return self._dsn(self.postgres_audit_user, self.postgres_audit_password)
 
     @property
     def superuser_dsn(self) -> str:

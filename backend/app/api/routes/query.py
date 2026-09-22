@@ -16,8 +16,10 @@ import logging
 
 from fastapi import APIRouter, HTTPException, Query, status
 
-from app.agents.runner import run_agent
+from app.agents.runner import AgentRun, run_agent
 from app.api.deps import RequestIdDep, SettingsDep, StoreDep
+from app.core.config import Settings
+from app.database import audit
 from app.schemas.query import (
     ConversationSummary,
     HistoryItem,
@@ -88,8 +90,64 @@ def create_query(
         settings=settings,
     )
     store.record(conversation.id, run)
+    _audit(run, conversation.id, settings)
 
     return QueryResponse.from_run(run, conversation.id)
+
+
+def _audit(run: AgentRun, conversation_id: str, settings: Settings) -> None:
+    """Persist the request to the audit log.
+
+    Called after the answer is assembled, never before: the log records what
+    happened, and a row written up front would have to be updated, which the
+    audit role deliberately cannot do.
+
+    `audit.record` never raises — an answered question must not become an
+    error because the log was unreachable. See `app/database/audit.py`.
+    """
+    confidence = (run.confidence or {}).get("level", "")
+    validation = (run.validation or {}).get("status", "")
+
+    detail: dict[str, object] = {}
+    if run.confidence:
+        detail["confidence_signals"] = run.confidence.get("signals", [])
+    if run.validation:
+        detail["validation_checks"] = run.validation.get("checks", [])
+    if run.investigation:
+        # The steps carry their own result rows, which would bloat every
+        # diagnostic row in the log. The plan and the attribution are what a
+        # debugger actually needs.
+        detail["investigation"] = {
+            "plan": run.investigation.get("plan", {}),
+            "contributors": run.investigation.get("contributors", []),
+            "reconciled": run.investigation.get("reconciled"),
+            "step_names": [step["name"] for step in run.investigation.get("steps", [])],
+        }
+
+    audit.record(
+        audit.AuditEntry(
+            request_id=run.request_id,
+            conversation_id=conversation_id,
+            question=run.question,
+            status=run.status,
+            intent=run.intent,
+            sql_text=run.sql,
+            tables_used=tuple(run.tables_used),
+            row_count=run.row_count,
+            retries=run.retries,
+            confidence=confidence,
+            validation=validation,
+            answer=run.answer,
+            error_code=run.error_code,
+            model=settings.gemini_model if not run.llm_simulated else "offline-baseline",
+            llm_calls=run.llm_calls,
+            llm_simulated=run.llm_simulated,
+            execution_ms=run.execution_ms,
+            total_ms=run.total_ms,
+            detail=detail,
+        ),
+        settings,
+    )
 
 
 @router.get(
