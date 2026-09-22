@@ -32,6 +32,7 @@ from app.agents.nodes import (
     fail_node,
     generate_node,
     insight_node,
+    investigate_node,
     plan_node,
     respond_node,
     result_validation_node,
@@ -45,10 +46,27 @@ from app.core.config import Settings, get_settings
 logger = logging.getLogger(__name__)
 
 
-def _after_planning(state: AgentState) -> Literal["schema_retrieval", "response"]:
-    """Skip the SQL path for questions that need no query."""
+def _after_planning(
+    state: AgentState,
+) -> Literal["schema_retrieval", "investigation", "response"]:
+    """Route to the investigation, the single-query path, or straight out."""
     if state.get("status") in ("no_query", "error"):
         return "response"
+    plan = state.get("plan")
+    if plan is not None and plan.diagnostic and plan.diagnostic_metric:
+        return "investigation"
+    return "schema_retrieval"
+
+
+def _after_investigation(state: AgentState) -> Literal["insight", "schema_retrieval"]:
+    """A plan the investigation could not support falls back to one query.
+
+    Rejecting an unsupported plan and then answering nothing would be worse
+    than answering it the ordinary way, so the fallback is a real path rather
+    than an error.
+    """
+    if state.get("investigation"):
+        return "insight"
     return "schema_retrieval"
 
 
@@ -108,6 +126,7 @@ def build_graph(settings: Settings | None = None) -> CompiledStateGraph:
     graph.add_node("sql_generation", generate_node)
     graph.add_node("sql_validation", validate_node)
     graph.add_node("sql_execution", execute_node)
+    graph.add_node("investigation", investigate_node)
     graph.add_node("result_validation", result_validation_node)
     graph.add_node("analysis", analyse_node)
     graph.add_node("visualization", visualize_node)
@@ -121,7 +140,16 @@ def build_graph(settings: Settings | None = None) -> CompiledStateGraph:
     graph.add_conditional_edges(
         "planner",
         _after_planning,
-        {"schema_retrieval": "schema_retrieval", "response": "response"},
+        {
+            "schema_retrieval": "schema_retrieval",
+            "investigation": "investigation",
+            "response": "response",
+        },
+    )
+    graph.add_conditional_edges(
+        "investigation",
+        _after_investigation,
+        {"insight": "insight", "schema_retrieval": "schema_retrieval"},
     )
     graph.add_edge("schema_retrieval", "sql_generation")
     graph.add_conditional_edges(

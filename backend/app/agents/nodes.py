@@ -31,6 +31,7 @@ from app.schemas.agent import (
 )
 from app.services import analysis as analysis_service
 from app.services import confidence as confidence_service
+from app.services import investigation as investigation_service
 from app.services import validation as validation_service
 from app.services import visualization
 from app.services.llm import get_provider
@@ -45,6 +46,10 @@ from app.services.llm.prompts import (
 from app.services.schema.retrieval import match_metrics, retrieve
 
 logger = logging.getLogger(__name__)
+
+#: Joins the investigation's queries into the single `sql` field the API
+#: already exposes, so the evidence panel can show every statement that ran.
+SQL_SEPARATOR = "\n\n-- ---- next step ----\n\n"
 
 
 def _timed(
@@ -360,6 +365,59 @@ def _validate_result(state: AgentState) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# 6b. Diagnostic investigation
+# ---------------------------------------------------------------------------
+
+
+def _investigate(state: AgentState) -> dict[str, Any]:
+    """Run a multi-step diagnostic instead of a single query.
+
+    The planner has already decided this is a "why did X change" question and
+    named the metric, periods and dimensions. Everything numeric from here is
+    computed by `services/investigation.py` from templated SQL — the model
+    contributes no figures and writes no queries.
+
+    A plan naming something unsupported is rejected rather than approximated,
+    and the run falls back to the ordinary single-query path.
+    """
+    plan_decision = state.get("plan")
+    if plan_decision is None:
+        return {"status": "error", "error_message": "no plan", "_trace_detail": "no plan"}
+
+    plan = investigation_service.build_plan(
+        metric=plan_decision.diagnostic_metric,
+        current_period=plan_decision.current_period,
+        comparison_period=plan_decision.comparison_period,
+        dimensions=list(plan_decision.dimensions_to_investigate),
+    )
+    if plan is None:
+        return {
+            "investigation": None,
+            "_trace_detail": "plan unsupported; falling back to a single query",
+        }
+
+    def execute(sql: str) -> tuple[list[str], list[tuple[Any, ...]]]:
+        result = execute_readonly(sql)
+        return result.columns, result.rows
+
+    outcome = investigation_service.run_investigation(plan, execute)
+    failed = [step.name for step in outcome.steps if step.error]
+
+    return {
+        "investigation": outcome.to_dict(),
+        "sql": SQL_SEPARATOR.join(step.sql for step in outcome.steps if not step.error),
+        "validated_sql": "",
+        "columns": list(outcome.steps[0].columns) if outcome.steps else [],
+        "rows": list(outcome.steps[0].rows) if outcome.steps else [],
+        "row_count": len(outcome.steps[0].rows) if outcome.steps else 0,
+        "_trace_detail": (
+            f"{len(outcome.steps)} steps, {len(outcome.contributors)} contributors"
+            + (f", {len(failed)} failed" if failed else "")
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
 # 7. Analysis
 # ---------------------------------------------------------------------------
 
@@ -420,7 +478,89 @@ def _visualize(state: AgentState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _diagnostic_insights(investigation: dict[str, Any]) -> InsightBundle:
+    """Narrate a diagnostic from figures the investigation already computed.
+
+    Written here rather than asked of the model on purpose. Every number in
+    this bundle is one the templates produced; handing them to a model to
+    phrase would reintroduce the risk of a figure being restated wrongly, and
+    the sentences a diagnosis needs are formulaic enough not to need one.
+    """
+    plan = investigation["plan"]
+    metric = plan["metric"]
+    change = investigation["change"]
+    percent = investigation["percent_change"]
+    direction = "fell" if change < 0 else "rose" if change > 0 else "was unchanged"
+
+    movement = f"{abs(change):,.2f}"
+    if percent is not None:
+        movement += f" ({abs(percent):.1f}%)"
+
+    headline = (
+        f"{metric.capitalize()} {direction} by {movement} in "
+        f"{plan.get('current_period_display', plan['current_period'])} compared with "
+        f"{plan.get('comparison_period_display', plan['comparison_period'])}."
+    )
+
+    items: list[InsightItem] = []
+    contributors = investigation.get("contributors", [])
+
+    same_direction = [
+        c for c in contributors if (c["change"] < 0) == (change < 0) and c["change"] != 0
+    ]
+    for contributor in same_direction[:3]:
+        share = abs(contributor["share_of_change"]) * 100
+        items.append(
+            InsightItem(
+                text=(
+                    f"{contributor['label']} ({contributor['dimension']}) accounts for "
+                    f"{share:.1f}% of the change, at {contributor['change']:,.2f}."
+                ),
+                kind="finding",
+                supporting_values=[f"{contributor['change']:,.2f}"],
+            )
+        )
+
+    # A group moving against the headline is part of the explanation too:
+    # "the North fell but the South grew" is the shape of most real diagnoses.
+    opposing = [c for c in contributors if (c["change"] < 0) != (change < 0) and c["change"] != 0]
+    if opposing:
+        top = opposing[0]
+        items.append(
+            InsightItem(
+                text=(
+                    f"{top['label']} ({top['dimension']}) moved the other way, at "
+                    f"{top['change']:,.2f}, partly offsetting the overall change."
+                ),
+                kind="finding",
+                supporting_values=[f"{top['change']:,.2f}"],
+            )
+        )
+
+    if investigation.get("reconciled") is True:
+        items.append(
+            InsightItem(
+                text="The breakdowns sum to the overall change, so no contributor is missing.",
+                kind="finding",
+            )
+        )
+
+    return InsightBundle(
+        headline=headline,
+        insights=items,
+        caveats=list(investigation.get("caveats", [])),
+    )
+
+
 def _insights(state: AgentState) -> dict[str, Any]:
+    investigation = state.get("investigation")
+    if investigation:
+        bundle = _diagnostic_insights(investigation)
+        return {
+            "insights": bundle,
+            "_trace_detail": f"diagnostic: {len(bundle.insights)} findings (no model call)",
+        }
+
     provider = get_provider()
     plan = state.get("plan")
     question = plan.resolved_question if plan else state["question"]
@@ -483,7 +623,34 @@ def _assess_confidence(state: AgentState, status: str) -> dict[str, Any]:
 
     report = None
     raw_validation = state.get("validation")
-    if raw_validation is not None:
+
+    investigation = state.get("investigation")
+    if raw_validation is None and investigation is not None:
+        # A diagnostic run does not pass through `result_validation`: it
+        # reconciles its own breakdowns against totals it computed, which is a
+        # stronger check than the generic one. Translating it into the same
+        # shape lets a reconciled diagnostic reach HIGH, rather than being
+        # capped at MEDIUM for a check it effectively already ran.
+        reconciled = investigation.get("reconciled")
+        status = {
+            True: validation_service.CheckStatus.PASSED,
+            False: validation_service.CheckStatus.FAILED,
+            None: validation_service.CheckStatus.SKIPPED,
+        }[reconciled]
+        report = validation_service.ValidationReport(
+            (
+                validation_service.ValidationCheck(
+                    "result_not_empty",
+                    validation_service.CheckStatus.PASSED
+                    if investigation.get("steps")
+                    else validation_service.CheckStatus.FAILED,
+                ),
+                validation_service.ValidationCheck(
+                    "group_reconciliation", status, "investigation breakdowns"
+                ),
+            )
+        )
+    elif raw_validation is not None:
         report = validation_service.ValidationReport(
             tuple(
                 validation_service.ValidationCheck(
@@ -558,6 +725,7 @@ schema_node = _timed("schema_retrieval", _retrieve_schema)
 generate_node = _timed("sql_generation", _generate_sql)
 validate_node = _timed("sql_validation", _validate_sql)
 execute_node = _timed("sql_execution", _execute_sql)
+investigate_node = _timed("investigation", _investigate)
 result_validation_node = _timed("result_validation", _validate_result)
 analyse_node = _timed("analysis", _analyse)
 visualize_node = _timed("visualization", _visualize)

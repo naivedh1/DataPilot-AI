@@ -123,6 +123,9 @@ class AgentState(TypedDict, total=False):
     # -- verification ------------------------------------------------------
     validation: dict[str, Any] | None
     confidence: dict[str, Any] | None
+    #: Present only for diagnostic runs. Every figure in it was computed
+    #: by services/investigation.py, not by the model.
+    investigation: dict[str, Any] | None
 
     # -- downstream --------------------------------------------------------
     analysis_summary: str

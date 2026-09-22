@@ -69,6 +69,39 @@ class PlannerDecision(BaseModel):
         description="If the warehouse cannot answer this, why. Null otherwise.",
     )
 
+    # -- diagnostic investigation ------------------------------------------
+    # Set only for "why did X change" questions. These select and parameterise
+    # an investigation template; they never carry SQL. The model chooses what
+    # to investigate, `services/investigation.py` computes every figure, and
+    # anything naming an unsupported metric or dimension is rejected there
+    # rather than executed.
+    diagnostic: bool = Field(
+        default=False,
+        description=(
+            "True when the question asks why a metric changed, rather than what "
+            "its value is. Requires a metric and a period below."
+        ),
+    )
+    diagnostic_metric: str = Field(
+        default="",
+        description="Metric to decompose: revenue, orders, units or refunds.",
+    )
+    current_period: str = Field(
+        default="",
+        description="The period under investigation, as YYYY-MM.",
+    )
+    comparison_period: str = Field(
+        default="",
+        description="What to compare against, as YYYY-MM. Blank means the preceding month.",
+    )
+    dimensions_to_investigate: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Dimensions that might explain the change: region, category, "
+            "product, segment or channel."
+        ),
+    )
+
 
 class SQLGeneration(BaseModel):
     """A candidate query."""

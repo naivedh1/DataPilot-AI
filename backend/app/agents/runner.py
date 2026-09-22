@@ -46,6 +46,7 @@ class AgentRun:
     traces: list[dict[str, Any]] = field(default_factory=list)
     validation: dict[str, Any] | None = None
     confidence: dict[str, Any] | None = None
+    investigation: dict[str, Any] | None = None
     total_ms: float = 0.0
     execution_ms: float = 0.0
     llm_calls: int = 0
@@ -180,6 +181,7 @@ def _shape(state: AgentState, question: str, request_id: str, total_ms: float) -
         attempts=[attempt.to_dict() for attempt in state.get("attempts", [])],
         validation=state.get("validation"),
         confidence=state.get("confidence"),
+        investigation=state.get("investigation"),
         traces=[trace.to_dict() for trace in state.get("traces", [])],
         total_ms=round(total_ms, 2),
         execution_ms=state.get("execution_ms", 0.0),

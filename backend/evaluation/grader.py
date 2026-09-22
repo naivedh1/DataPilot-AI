@@ -94,6 +94,34 @@ def _derivable_values(run: AgentRun) -> set[str]:
         available.add(_normalise(f"{value:.1f}"))
         available.add(_normalise(f"{round(value):d}"))
 
+    # A diagnostic answer cites figures from every query it ran, not just the
+    # first. `run.rows` holds only the headline step, so grading against it
+    # alone would mark correct contribution figures as invented — the check
+    # firing on right answers, which is how it stops being read.
+    if run.investigation:
+        for step in run.investigation.get("steps", []):
+            for row in step.get("rows", []):
+                for cell in row:
+                    if cell is None:
+                        continue
+                    available.add(_normalise(str(cell)))
+                    if _is_number(cell) and not isinstance(cell, bool):
+                        add(float(cell))
+        for contributor in run.investigation.get("contributors", []):
+            add(float(contributor["change"]))
+            add(abs(float(contributor["change"])))
+            add(float(contributor["share_of_change"]) * 100)
+            add(abs(float(contributor["share_of_change"])) * 100)
+        for key in ("current_value", "previous_value", "change"):
+            value = run.investigation.get(key)
+            if value is not None:
+                add(float(value))
+                add(abs(float(value)))
+        percent = run.investigation.get("percent_change")
+        if percent is not None:
+            add(float(percent))
+            add(abs(float(percent)))
+
     # The row count is a property of the result, not a claim about the data.
     # "The query returned 288 rows" is grounded by definition, and flagging it
     # would make the check noisy in exactly the cases where it should be quiet.
@@ -269,6 +297,28 @@ def grade(case: EvalCase, run: AgentRun) -> CaseResult:
         values = _last_numeric_column(run)
         ordered = values == sorted(values, reverse=True)
         checks.append(Check("results are ranked descending", ordered, f"{values[:5]}"))
+
+    if case.expect_diagnostic:
+        investigation = run.investigation
+        checks.append(
+            Check("ran a multi-step investigation", investigation is not None, "single query used")
+        )
+        if investigation:
+            steps = investigation.get("steps", [])
+            checks.append(
+                Check("investigated more than one query", len(steps) > 1, f"{len(steps)} steps")
+            )
+            failed = [step["name"] for step in steps if step.get("error")]
+            checks.append(Check("every step executed", not failed, ", ".join(failed)))
+            # None means there was no change to attribute, which is not a
+            # failure; False means the parts did not add up, which is.
+            checks.append(
+                Check(
+                    "breakdowns reconcile to the headline",
+                    investigation.get("reconciled") is not False,
+                    str(investigation.get("reconciled")),
+                )
+            )
 
     if case.expect_value_range and run.rows:
         needle, low, high = case.expect_value_range

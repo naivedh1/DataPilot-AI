@@ -142,6 +142,47 @@ class ConfidenceModel(BaseModel):
     signals: list[ConfidenceSignalModel] = Field(default_factory=list)
 
 
+class InvestigationStepModel(BaseModel):
+    """One query the diagnostic ran, and what it was for."""
+
+    name: str
+    purpose: str
+    sql: str
+    columns: list[str] = Field(default_factory=list)
+    rows: list[list[Any]] = Field(default_factory=list)
+    error: str = ""
+
+
+class ContributorModel(BaseModel):
+    """One dimension value's share of the overall change."""
+
+    dimension: str
+    label: str
+    change: float
+    share_of_change: float
+
+
+class InvestigationModel(BaseModel):
+    """A multi-step diagnostic, with every query it ran.
+
+    Present only for "why did X change" questions. Every figure was computed
+    by `app/services/investigation.py` from templated SQL; the model chose
+    what to investigate but wrote none of the queries and none of the numbers.
+    """
+
+    plan: dict[str, Any] = Field(default_factory=dict)
+    steps: list[InvestigationStepModel] = Field(default_factory=list)
+    current_value: float = 0.0
+    previous_value: float = 0.0
+    change: float = 0.0
+    percent_change: float | None = None
+    contributors: list[ContributorModel] = Field(default_factory=list)
+    reconciled: bool | None = Field(
+        default=None, description="Whether the breakdowns sum to the headline change."
+    )
+    caveats: list[str] = Field(default_factory=list)
+
+
 class QueryResponse(BaseModel):
     """The full answer, with its evidence."""
 
@@ -161,6 +202,10 @@ class QueryResponse(BaseModel):
     )
     confidence: ConfidenceModel | None = Field(
         default=None, description="How much weight the answer can bear, and why."
+    )
+    investigation: InvestigationModel | None = Field(
+        default=None,
+        description="The diagnostic trail, for a 'why did X change' question.",
     )
     execution: ExecutionMeta
     attempts: list[SQLAttemptModel] = Field(
@@ -190,6 +235,7 @@ class QueryResponse(BaseModel):
             reasoning_summary=run.reasoning_summary,
             validation=ValidationModel(**run.validation) if run.validation else None,
             confidence=ConfidenceModel(**run.confidence) if run.confidence else None,
+            investigation=(InvestigationModel(**run.investigation) if run.investigation else None),
             execution=ExecutionMeta(
                 status=run.status,
                 row_count=run.row_count,

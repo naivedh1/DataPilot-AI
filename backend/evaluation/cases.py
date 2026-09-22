@@ -38,6 +38,7 @@ class Category(StrEnum):
     COMPARISONS = "comparisons"
     DATE_FILTERING = "date_filtering"
     JOINS = "joins"
+    DIAGNOSTIC = "diagnostic"
     FOLLOW_UP = "follow_up"
     SECURITY = "security"
     UNANSWERABLE = "unanswerable"
@@ -73,6 +74,11 @@ class EvalCase:
     #: size and fails everywhere else. The expectation still comes from
     #: deterministic SQL, never from what the agent happened to answer.
     expect_row_count_of: tuple[str, str] | None = None
+
+    #: The question must be answered by the multi-step diagnostic path, not
+    #: by a single query. Asserts the investigation ran, produced more than one
+    #: step, and that its breakdowns reconcile to the headline change.
+    expect_diagnostic: bool = False
 
     #: The question cannot be answered from this warehouse; the system must say
     #: so rather than inventing a query.
@@ -332,6 +338,37 @@ CASES: tuple[EvalCase, ...] = (
         intent="aggregation",
         expect_tables=frozenset({"orders"}),
         expect_rows=1,
+    ),
+    # -- diagnostic ------------------------------------------------------
+    EvalCase(
+        id="dia-001",
+        question="Why did revenue fall in February 2026?",
+        category=Category.DIAGNOSTIC,
+        intent="diagnostic",
+        expect_tables=frozenset({"orders"}),
+        expect_diagnostic=True,
+        notes=(
+            "A platform outage is planted in that window. The answer must "
+            "decompose the change, not just restate it."
+        ),
+    ),
+    EvalCase(
+        id="dia-002",
+        question="Why did revenue fall in February 2026 by region?",
+        category=Category.DIAGNOSTIC,
+        intent="diagnostic",
+        expect_tables=frozenset({"orders", "regions"}),
+        expect_diagnostic=True,
+        notes="An explicit dimension must reach the investigation plan.",
+    ),
+    EvalCase(
+        id="dia-003",
+        question="What caused the change in orders in March 2026?",
+        category=Category.DIAGNOSTIC,
+        intent="diagnostic",
+        expect_tables=frozenset({"orders"}),
+        expect_diagnostic=True,
+        notes="A flash sale is planted in that window; orders should have risen.",
     ),
     EvalCase(
         id="ref-001",

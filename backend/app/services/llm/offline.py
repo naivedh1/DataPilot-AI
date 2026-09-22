@@ -698,6 +698,72 @@ def _resolve_followup(question: str, prompt: str) -> str:
     return f"{match.group(1).strip()}, {question.strip()}"
 
 
+#: A diagnostic asks why a measure moved, not what it is. The distinction is
+#: the whole trigger for the multi-step path, so it is matched on explicit
+#: causal phrasing rather than on any mention of a fall.
+_WHY_MARKERS: tuple[str, ...] = (
+    "why did",
+    "why has",
+    "why is",
+    "what caused",
+    "what drove",
+    "reason for",
+    "explain the",
+    "account for the",
+)
+
+_DIAGNOSTIC_METRICS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("refund",), "refunds"),
+    (("unit", "quantity"), "units"),
+    (("order",), "orders"),
+    (("revenue", "sales", "turnover", "income"), "revenue"),
+)
+
+
+def _diagnostic_fields(question: str) -> dict[str, object]:
+    """Detect a diagnostic question and parameterise the investigation.
+
+    Returns the planner fields, or an empty dict when this is not a diagnostic
+    or names no period. Without a period there is nothing to compare, and
+    guessing one would invent the premise of the answer.
+    """
+    lowered = question.lower()
+    if not any(marker in lowered for marker in _WHY_MARKERS):
+        return {}
+
+    metric = next(
+        (name for terms, name in _DIAGNOSTIC_METRICS if any(t in lowered for t in terms)),
+        "",
+    )
+    if not metric:
+        return {}
+
+    match = _MONTH_YEAR.search(lowered)
+    if not match:
+        return {}
+    month = [name[:3] for name in _MONTH_NAMES].index(match.group(1)) + 1
+    year = int(match.group(2))
+
+    dimensions = [
+        name
+        for name, terms in (
+            ("region", ("region", "area", "territory", "geograph")),
+            ("category", ("category", "product line")),
+            ("product", ("product", "sku")),
+            ("segment", ("segment",)),
+            ("channel", ("channel",)),
+        )
+        if any(term in lowered for term in terms)
+    ] or ["region", "category"]
+
+    return {
+        "diagnostic": True,
+        "diagnostic_metric": metric,
+        "current_period": f"{year}-{month:02d}",
+        "dimensions_to_investigate": dimensions,
+    }
+
+
 def _build_planner(question: str, prompt: str) -> PlannerDecision:
     question = _resolve_followup(question, prompt)
     lowered = question.lower()
@@ -718,6 +784,7 @@ def _build_planner(question: str, prompt: str) -> PlannerDecision:
 
     grain = _find_grain(question)
     dimension = _find_dimension(question)
+    diagnostic = _diagnostic_fields(question)
 
     return PlannerDecision(
         intent=intent,
@@ -730,6 +797,7 @@ def _build_planner(question: str, prompt: str) -> PlannerDecision:
         # SQL generator downstream needs no conversation history of its own.
         resolved_question=question,
         reasoning_summary="Classified by the deterministic offline baseline.",
+        **diagnostic,
     )
 
 

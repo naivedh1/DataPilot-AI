@@ -100,6 +100,63 @@ system measurable and the evaluation meaningful.
 
 ---
 
+## 4b. Diagnostic investigations
+
+"Why did revenue fall in August?" is not a query. It is a small argument:
+establish the change, break it down, check the mechanisms, confirm the parts
+add up. The agent answers it on a separate path.
+
+```
+planner ─(diagnostic)─▶ investigation ─▶ insight ─▶ response
+        └─(otherwise)──▶ schema ─▶ generate ─▶ ... ─▶ response
+```
+
+### Who decides what
+
+The brief assigns the model "decide what analytical investigation to perform
+next" and assigns deterministic code "metric calculations when definitions are
+known". Those pull against each other here. The split is:
+
+| | Decides | Owns |
+|---|---|---|
+| Model | that this is a diagnostic; the metric; the periods; which dimensions to examine | no figures, no SQL |
+| `services/investigation.py` | nothing about intent | every query and every number |
+
+The model's output is four validated fields on `PlannerDecision`, not SQL. A
+plan naming a metric or dimension that does not exist is **rejected**, and the
+run falls back to the ordinary single-query path rather than approximating it.
+
+The cost is real: the investigation can only follow shapes that exist in the
+module. A genuinely novel decomposition is not available. The gain is that
+every figure in the evidence trail came from tested code rather than from a
+model that was fluent.
+
+### Why the templates are not one generic query
+
+Two subtleties the templates encode, both of which produce plausible wrong
+numbers if missed:
+
+- **Grain.** Splitting revenue by category must descend to `order_items`, and
+  summing `orders.total_amount` there multiplies each order by its line count.
+  The templates switch to `SUM(oi.line_total)` for line-grain dimensions.
+- **Reconciliation basis.** Line-level revenue is a *different quantity* from
+  order-level revenue — it excludes tax and shipping and carries no
+  order-level discount. A category breakdown is therefore reconciled against a
+  line-level total, never the headline. Comparing them would report that
+  arithmetic as a defect, and the answer carries a caveat saying so.
+
+An `orders` count split by category is not reconcilable at all — an order
+spanning two categories is counted in both — so it is excluded from the check
+rather than failed.
+
+### What the answer carries
+
+Every step's SQL, the contribution of each dimension value as a signed share
+of the change (a group moving against the headline gets a negative share), and
+whether the breakdowns reconcile. The narration is assembled from those
+numbers in code: a model asked to phrase them could restate one wrongly, and
+the sentences a diagnosis needs are formulaic enough not to need one.
+
 ## 5. SQL safety model
 
 Four independent layers, each sufficient to stop a write on its own:
