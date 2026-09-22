@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app import __version__
-from app.api.routes import health, query, schema
+from app.api.routes import health, profile, query, schema
 from app.core.config import Settings, get_settings
 from app.core.exceptions import DataPilotError
 from app.database.session import dispose_engines
@@ -122,6 +122,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api.include_router(health.router)
     api.include_router(query.router)
     api.include_router(schema.router)
+    api.include_router(profile.router)
     app.include_router(api)
 
     return app

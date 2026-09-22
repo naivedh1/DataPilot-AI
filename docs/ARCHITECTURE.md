@@ -157,6 +157,37 @@ whether the breakdowns reconcile. The narration is assembled from those
 numbers in code: a model asked to phrase them could restate one wrongly, and
 the sentences a diagnosis needs are formulaic enough not to need one.
 
+## 4c. Data profiling
+
+`GET /api/profile` measures the warehouse rather than describing it: row
+counts, null rates, cardinality, value ranges, duplicate candidates, orphaned
+foreign keys and numeric outliers.
+
+None of it is asked of a language model. A model given a table produces a
+confident, plausible profile without reading a row, and nothing about the
+output reveals which kind it is.
+
+Three choices worth knowing:
+
+- **One query per table, not per column.** A twelve-column table profiled
+  column-by-column is twelve sequential scans. The per-column statistics are
+  built as one SELECT with one expression per statistic.
+- **Structure is read from the model layer, not guessed.** Keys are declared
+  in `app/models`, so the profiler does not infer them from column names. It
+  checks whether the declared constraints are *honoured by the data* instead —
+  a foreign key with orphaned rows is a finding; a guessed key is noise.
+- **Findings are tuned against noise.** Outliers use a 3.0 IQR fence rather
+  than the conventional 1.5, and are suppressed entirely above 5% of rows: a
+  zero-inflated column like `discount_amount` has Q1 = 0 and a tiny IQR, so
+  every discounted row falls outside the fence. Flagging a fifth of a table as
+  anomalous teaches the reader to ignore the finding. Audit columns are
+  excluded from the constant-column check, since a bulk load makes them
+  constant by construction.
+
+`quality_score` is the findings weighted by severity subtracted from 100. It
+is deliberately crude and is always shown beside the findings themselves — it
+ranks tables for attention, it is not an authority.
+
 ## 5. SQL safety model
 
 Four independent layers, each sufficient to stop a write on its own:

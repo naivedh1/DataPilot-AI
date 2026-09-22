@@ -183,6 +183,62 @@ class InvestigationModel(BaseModel):
     caveats: list[str] = Field(default_factory=list)
 
 
+class ColumnProfileModel(BaseModel):
+    """Measured facts about one column."""
+
+    name: str
+    type: str
+    nullable: bool
+    null_count: int
+    null_percent: float
+    distinct_count: int
+    cardinality_ratio: float = Field(
+        description="Distinct values over non-null rows. 1.0 means every value is unique."
+    )
+    minimum: Any = None
+    maximum: Any = None
+    mean: float | None = None
+    top_values: list[dict[str, Any]] = Field(default_factory=list)
+    outlier_count: int = 0
+
+
+class ProfileFindingModel(BaseModel):
+    """Something in the data worth a human's attention."""
+
+    kind: str
+    severity: str = Field(description="error, warning or info.")
+    detail: str
+
+
+class TableProfileModel(BaseModel):
+    """One table, measured."""
+
+    table: str
+    rows: int
+    columns: int
+    quality_score: float = Field(
+        description=(
+            "Findings weighted by severity, subtracted from 100. A ranking aid, "
+            "not an authority — read the findings."
+        )
+    )
+    duplicate_candidates: int
+    column_profiles: list[ColumnProfileModel] = Field(default_factory=list)
+    findings: list[ProfileFindingModel] = Field(default_factory=list)
+
+
+class ProfileResponse(BaseModel):
+    """The warehouse as measured, not as described.
+
+    Every figure comes from a query. No part of this is produced by a language
+    model, which could generate a plausible profile without reading a row.
+    """
+
+    tables: list[TableProfileModel] = Field(default_factory=list)
+    total_rows: int
+    table_count: int
+
+
 class QueryResponse(BaseModel):
     """The full answer, with its evidence."""
 
