@@ -21,8 +21,15 @@ only the relevant schema, writes PostgreSQL, **validates it before it runs**,
 executes it under a read-only role with a timeout and a row cap, analyses the
 result with Pandas, picks a chart, and explains what the numbers show.
 
-Every answer ships with its evidence: the SQL, the rows, the chart, the
-execution trace, and every SQL attempt that was rejected along the way.
+Every answer ships with its evidence: a **deterministically computed
+confidence level** and the signals behind it, the **validation checks** that
+ran against the figures, the SQL, the rows, the chart, the execution trace,
+and every SQL attempt that was rejected along the way.
+
+Ask it *why* something changed and it runs a **multi-step investigation**
+instead of one query — comparing periods, attributing the change across
+dimensions, checking refunds and discounts, and confirming the parts sum to
+the whole. Every query it ran is inspectable in the answer.
 
 ## 2. Why it exists
 

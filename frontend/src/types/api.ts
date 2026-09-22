@@ -69,6 +69,88 @@ export interface SQLAttempt {
 
 export type Cell = string | number | boolean | null;
 
+export type ConfidenceLevel = "high" | "medium" | "low" | "insufficient_data";
+
+/** One input to the confidence assessment, and the ceiling it imposed. */
+export interface ConfidenceSignal {
+  name: string;
+  ceiling: ConfidenceLevel;
+  detail: string;
+}
+
+/**
+ * Why the answer carries the confidence it does.
+ *
+ * Computed by the backend from what the run actually did — no part of it is
+ * supplied by the language model. `level` is a ceiling: the worst signal wins.
+ */
+export interface Confidence {
+  level: ConfidenceLevel;
+  rationale: string;
+  signals: ConfidenceSignal[];
+}
+
+export type CheckStatus = "passed" | "failed" | "skipped";
+
+export interface ValidationCheck {
+  name: string;
+  status: CheckStatus;
+  detail: string;
+}
+
+export interface Validation {
+  /** `not_verified` means nothing applicable ran — it is not a pass. */
+  status: "passed" | "failed" | "not_verified";
+  checks: ValidationCheck[];
+}
+
+/** One query the diagnostic ran, and what it was for. */
+export interface InvestigationStep {
+  name: string;
+  purpose: string;
+  sql: string;
+  columns: string[];
+  rows: Cell[][];
+  error: string;
+}
+
+/** One dimension value's share of the overall change. */
+export interface Contributor {
+  dimension: string;
+  label: string;
+  change: number;
+  /** Signed against the headline: negative means it moved the other way. */
+  share_of_change: number;
+}
+
+/**
+ * A multi-step diagnostic. Present only for "why did X change" questions.
+ *
+ * Every figure was computed by the backend from templated SQL; the model chose
+ * what to investigate but wrote none of the queries.
+ */
+export interface Investigation {
+  plan: {
+    intent: string;
+    metric: string;
+    current_period: string;
+    comparison_period: string;
+    current_period_display?: string;
+    comparison_period_display?: string;
+    dimensions_to_investigate: string[];
+    checks: string[];
+  };
+  steps: InvestigationStep[];
+  current_value: number;
+  previous_value: number;
+  change: number;
+  percent_change: number | null;
+  contributors: Contributor[];
+  /** Null when there was no change to attribute. */
+  reconciled: boolean | null;
+  caveats: string[];
+}
+
 export interface QueryResponse {
   request_id: string;
   conversation_id: string;
@@ -81,6 +163,9 @@ export interface QueryResponse {
   rows: Cell[][];
   chart: Chart | null;
   reasoning_summary: string;
+  validation: Validation | null;
+  confidence: Confidence | null;
+  investigation: Investigation | null;
   execution: ExecutionMeta;
   attempts: SQLAttempt[];
   trace: NodeTrace[];

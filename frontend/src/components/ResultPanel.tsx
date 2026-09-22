@@ -1,14 +1,20 @@
 /**
- * One answered question: headline, chart, insights, SQL, data and metadata.
+ * One answered question: headline, confidence, chart, insights, validation,
+ * SQL, data and metadata.
  *
- * The ordering is deliberate — answer first, then the evidence for it. A
- * business user reads the top; anyone who wants to audit the number can expand
- * the SQL and the rows underneath.
+ * The ordering is deliberate — answer first, then how much weight it carries,
+ * then the evidence for it. A business user reads the top; anyone who wants to
+ * audit the number can expand the checks, the SQL and the rows underneath.
  */
 
 import { useMemo, useState } from "react";
 
 import { ChartView } from "@/components/ChartView";
+import {
+  ConfidencePanel,
+  InvestigationPanel,
+  ValidationPanel,
+} from "@/components/EvidencePanel";
 import { Badge, Button, Card, CardHeader } from "@/components/primitives";
 import { cn } from "@/lib/cn";
 import { Icon } from "@/components/Icon";
@@ -379,7 +385,16 @@ export function ResultPanel({ response }: { response: QueryResponse }) {
         </div>
       </div>
 
+      {/* Confidence sits directly under the answer, before the evidence for
+          it. A reader who stops here has still seen how much weight the
+          number carries. */}
+      {response.confidence && <ConfidencePanel confidence={response.confidence} />}
+
       <KpiRow response={response} />
+
+      {response.investigation && (
+        <InvestigationPanel investigation={response.investigation} />
+      )}
 
       {hasChart && response.chart && (
         <Card>
@@ -395,6 +410,7 @@ export function ResultPanel({ response }: { response: QueryResponse }) {
       )}
 
       <InsightList insights={response.insights} caveats={response.caveats} />
+      {response.validation && <ValidationPanel validation={response.validation} />}
       <SqlPanel response={response} />
       <DataTable response={response} />
       <ExecutionPanel response={response} />
