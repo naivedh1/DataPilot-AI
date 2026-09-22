@@ -137,6 +137,7 @@ class TestHappyPath:
             "sql_generation",
             "sql_validation",
             "sql_execution",
+            "result_validation",
             "analysis",
             "visualization",
             "insight",

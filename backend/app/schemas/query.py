@@ -107,6 +107,41 @@ class ChartModel(BaseModel):
     value_format: str = "number"
 
 
+class ValidationCheckModel(BaseModel):
+    """One deterministic check run against the result."""
+
+    name: str
+    status: str = Field(description="passed, failed, or skipped.")
+    detail: str = ""
+
+
+class ValidationModel(BaseModel):
+    """What the result validator found."""
+
+    status: str = Field(description="passed, failed, or not_verified.")
+    checks: list[ValidationCheckModel] = Field(default_factory=list)
+
+
+class ConfidenceSignalModel(BaseModel):
+    """One input to the confidence assessment, and the ceiling it imposed."""
+
+    name: str
+    ceiling: str
+    detail: str
+
+
+class ConfidenceModel(BaseModel):
+    """Why the answer carries the confidence it does.
+
+    Computed by `app/services/confidence.py` from what the run actually did.
+    No part of it is supplied by the language model.
+    """
+
+    level: str = Field(description="high, medium, low, or insufficient_data.")
+    rationale: str = Field(description="Plain-language reason for the level.")
+    signals: list[ConfidenceSignalModel] = Field(default_factory=list)
+
+
 class QueryResponse(BaseModel):
     """The full answer, with its evidence."""
 
@@ -121,6 +156,12 @@ class QueryResponse(BaseModel):
     rows: list[list[Any]] = Field(default_factory=list)
     chart: ChartModel | None = None
     reasoning_summary: str = ""
+    validation: ValidationModel | None = Field(
+        default=None, description="Deterministic checks run against the returned figures."
+    )
+    confidence: ConfidenceModel | None = Field(
+        default=None, description="How much weight the answer can bear, and why."
+    )
     execution: ExecutionMeta
     attempts: list[SQLAttemptModel] = Field(
         default_factory=list, description="Every SQL attempt, including rejected ones."
@@ -147,6 +188,8 @@ class QueryResponse(BaseModel):
             rows=run.rows,
             chart=ChartModel(**run.chart) if run.chart else None,
             reasoning_summary=run.reasoning_summary,
+            validation=ValidationModel(**run.validation) if run.validation else None,
+            confidence=ConfidenceModel(**run.confidence) if run.confidence else None,
             execution=ExecutionMeta(
                 status=run.status,
                 row_count=run.row_count,

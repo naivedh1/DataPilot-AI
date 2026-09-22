@@ -9,7 +9,7 @@ reason for the failure so the retry is informed rather than a re-roll.
 spent. A third guard, `AGENT_MAX_STEPS`, caps total node executions, so even a
 routing bug cannot produce an infinite run.
 
-    planner ──▶ schema ──▶ generate ──▶ validate ──┬─(ok)──▶ execute ──┬─(ok)─▶ analyse
+    planner ─▶ schema ─▶ generate ─▶ validate ─┬(ok)▶ execute ─┬(ok)▶ check ─▶ analyse
        │                       ▲                   │                   │
        └─(no SQL needed)──▶ respond                │                   └─(error, budget)─┐
                                ▲                   └─(invalid, budget)──────────────────┤
@@ -34,6 +34,7 @@ from app.agents.nodes import (
     insight_node,
     plan_node,
     respond_node,
+    result_validation_node,
     schema_node,
     validate_node,
     visualize_node,
@@ -107,6 +108,7 @@ def build_graph(settings: Settings | None = None) -> CompiledStateGraph:
     graph.add_node("sql_generation", generate_node)
     graph.add_node("sql_validation", validate_node)
     graph.add_node("sql_execution", execute_node)
+    graph.add_node("result_validation", result_validation_node)
     graph.add_node("analysis", analyse_node)
     graph.add_node("visualization", visualize_node)
     graph.add_node("insight", insight_node)
@@ -130,7 +132,7 @@ def build_graph(settings: Settings | None = None) -> CompiledStateGraph:
 
     # Validation failure -> count the retry, then regenerate with the reason.
     validation_router = _make_retry_router(settings, success="sql_execution")
-    execution_router = _make_retry_router(settings, success="analysis")
+    execution_router = _make_retry_router(settings, success="result_validation")
 
     graph.add_conditional_edges(
         "sql_validation",
@@ -147,13 +149,14 @@ def build_graph(settings: Settings | None = None) -> CompiledStateGraph:
         "sql_execution",
         execution_router,
         {
-            "analysis": "analysis",
+            "result_validation": "result_validation",
             "sql_generation": "count_retry",
             "failure": "failure",
         },
     )
 
     graph.add_edge("count_retry", "sql_generation")
+    graph.add_edge("result_validation", "analysis")
     graph.add_edge("analysis", "visualization")
     graph.add_edge("visualization", "insight")
     graph.add_edge("insight", "response")

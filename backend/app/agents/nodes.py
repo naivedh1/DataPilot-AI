@@ -30,6 +30,8 @@ from app.schemas.agent import (
     SQLGeneration,
 )
 from app.services import analysis as analysis_service
+from app.services import confidence as confidence_service
+from app.services import validation as validation_service
 from app.services import visualization
 from app.services.llm import get_provider
 from app.services.llm.prompts import (
@@ -40,7 +42,7 @@ from app.services.llm.prompts import (
     build_planner_prompt,
     build_sql_prompt,
 )
-from app.services.schema.retrieval import retrieve
+from app.services.schema.retrieval import match_metrics, retrieve
 
 logger = logging.getLogger(__name__)
 
@@ -207,7 +209,7 @@ def _generate_sql(state: AgentState) -> dict[str, Any]:
         "sql": generation.sql,
         "llm_calls": state.get("llm_calls", 0) + 1,
         "llm_simulated": usage.simulated,
-        "_trace_detail": f"confidence={generation.confidence:.2f}",
+        "_trace_detail": f"{len(generation.tables_used)} tables referenced",
     }
 
 
@@ -300,7 +302,65 @@ def _execute_sql(state: AgentState) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# 6. Analysis
+# 6. Result validation
+# ---------------------------------------------------------------------------
+
+
+def _validate_result(state: AgentState) -> dict[str, Any]:
+    """Check the returned figures before anything narrates them.
+
+    The reconciliation check costs a second query, so it runs only when the
+    answer is a grouped aggregate — the only shape where parts and whole are
+    distinct claims that can disagree. When the total query cannot be derived
+    safely the check is skipped, never assumed to pass.
+
+    A failure here does not abort the run. The number is still shown; what
+    changes is that the answer is no longer allowed to present itself as
+    reliable, which `confidence.py` enforces.
+    """
+    columns = state.get("columns", [])
+    rows = state.get("rows", [])
+
+    # The *pre-normalised* SQL, deliberately. The validator appends a row cap
+    # to every query, and a LIMIT is how `build_total_query` recognises a
+    # genuine top-N — where the parts are not meant to sum to the whole.
+    # Reading `validated_sql` here would make every query look like a top-N
+    # and skip reconciliation on all of them.
+    sql = state.get("sql", "")
+
+    total_columns: list[str] | None = None
+    total_rows: list[tuple[Any, ...]] | None = None
+
+    total_sql = validation_service.build_total_query(sql) if sql else None
+    if total_sql:
+        try:
+            total = execute_readonly(total_sql)
+            total_columns, total_rows = total.columns, total.rows
+        except SQLExecutionError as error:
+            # A cross-check that cannot run leaves the claim unverified. That
+            # is a weaker answer, not a failed one.
+            logger.info("reconciliation query failed: %s", error.safe_message[:120])
+
+    report = validation_service.validate_result(
+        columns=columns,
+        rows=rows,
+        row_count=state.get("row_count", 0),
+        truncated=state.get("truncated", False),
+        total_columns=total_columns,
+        total_rows=total_rows,
+    )
+
+    failed = len(report.failed)
+    return {
+        "validation": report.to_dict(),
+        "_trace_detail": (
+            f"{len(report.passed)} passed, {failed} failed, {len(report.skipped)} skipped"
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 7. Analysis
 # ---------------------------------------------------------------------------
 
 
@@ -332,7 +392,7 @@ def _analyse(state: AgentState) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# 7. Visualization
+# 8. Visualization
 # ---------------------------------------------------------------------------
 
 
@@ -356,7 +416,7 @@ def _visualize(state: AgentState) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# 8. Insight
+# 9. Insight
 # ---------------------------------------------------------------------------
 
 
@@ -407,15 +467,59 @@ def _insights(state: AgentState) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# 9. Response
+# 10. Response
 # ---------------------------------------------------------------------------
+
+
+def _assess_confidence(state: AgentState, status: str) -> dict[str, Any]:
+    """Score the run from what it actually did.
+
+    Computed here rather than anywhere upstream because the inputs are only
+    all present at the end: the retry count is final, the result has been
+    validated, and the terminal status is known.
+    """
+    plan = state.get("plan")
+    question = plan.resolved_question if plan else state.get("question", "")
+
+    report = None
+    raw_validation = state.get("validation")
+    if raw_validation is not None:
+        report = validation_service.ValidationReport(
+            tuple(
+                validation_service.ValidationCheck(
+                    name=check["name"],
+                    status=validation_service.CheckStatus(check["status"]),
+                    detail=check.get("detail", ""),
+                )
+                for check in raw_validation.get("checks", [])
+            )
+        )
+
+    assessment = confidence_service.assess(
+        status=status,
+        row_count=state.get("row_count", 0),
+        metric_matched=bool(match_metrics(question)),
+        ambiguous=bool(plan and plan.unsupported_reason) or status == "no_query",
+        retry_count=state.get("retry_count", 0),
+        validation=report,
+    )
+    return assessment.to_dict()
 
 
 def _respond(state: AgentState) -> dict[str, Any]:
     """Finalise the run. Purely local — no model call."""
-    if state.get("status") in ("error", "no_query"):
-        return {"_trace_detail": f"terminal: {state.get('status')}"}
-    return {"status": "success", "_trace_detail": "answer assembled"}
+    status = state.get("status", "success")
+    if status in ("error", "no_query"):
+        return {
+            "confidence": _assess_confidence(state, status),
+            "_trace_detail": f"terminal: {status}",
+        }
+    confidence = _assess_confidence(state, "success")
+    return {
+        "status": "success",
+        "confidence": confidence,
+        "_trace_detail": f"answer assembled, confidence={confidence['level']}",
+    }
 
 
 def _fail(state: AgentState) -> dict[str, Any]:
@@ -431,6 +535,7 @@ def _fail(state: AgentState) -> dict[str, Any]:
         "status": "error",
         "error_code": state.get("error_code") or "sql_generation_failed",
         "error_message": _safe(message),
+        "confidence": _assess_confidence(state, "error"),
         "_trace_detail": f"gave up after {len(attempts)} attempts",
     }
 
@@ -453,6 +558,7 @@ schema_node = _timed("schema_retrieval", _retrieve_schema)
 generate_node = _timed("sql_generation", _generate_sql)
 validate_node = _timed("sql_validation", _validate_sql)
 execute_node = _timed("sql_execution", _execute_sql)
+result_validation_node = _timed("result_validation", _validate_result)
 analyse_node = _timed("analysis", _analyse)
 visualize_node = _timed("visualization", _visualize)
 insight_node = _timed("insight", _insights)

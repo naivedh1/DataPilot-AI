@@ -13,7 +13,7 @@ neither exposed in the UI nor stored.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -82,10 +82,6 @@ class SQLGeneration(BaseModel):
         default="",
         max_length=400,
         description="Brief note on how the query was constructed.",
-    )
-    confidence: Annotated[float, Field(ge=0.0, le=1.0)] = Field(
-        default=0.5,
-        description="Self-assessed confidence. Used for surfacing uncertainty, not for routing.",
     )
 
 

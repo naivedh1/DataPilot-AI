@@ -120,6 +120,10 @@ class AgentState(TypedDict, total=False):
     truncated: bool
     execution_ms: float
 
+    # -- verification ------------------------------------------------------
+    validation: dict[str, Any] | None
+    confidence: dict[str, Any] | None
+
     # -- downstream --------------------------------------------------------
     analysis_summary: str
     analysis: dict[str, Any] | None

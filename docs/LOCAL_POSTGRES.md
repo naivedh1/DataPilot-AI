@@ -75,6 +75,20 @@ application: `psycopg[binary]` bundles its own libpq. All DDL and seeding in
 Phase 2 is therefore driven from Python rather than from `psql` scripts, which
 is a better outcome anyway — it is testable and cross-platform.
 
+## Starting it after a reboot
+
+The cluster is not a Windows service, so nothing restarts it automatically.
+
+```powershell
+.\scripts\start-postgres.ps1          # start
+.\scripts\start-postgres.ps1 -Stop    # stop
+```
+
+The script is idempotent — running it against an already-running cluster
+reports that and exits cleanly. Without a running cluster the integration
+tests skip rather than fail, so a green `pytest` run with 130-odd skips
+usually means this step was missed.
+
 ## Verified state
 
 ```

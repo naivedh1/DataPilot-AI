@@ -339,7 +339,6 @@ def _build_refund_sql(question: str, lowered: str) -> SQLGeneration | None:
                 "Refunded value over gross fulfilled sales. Each side is aggregated "
                 "separately so an order with two refunds is not counted twice."
             ),
-            confidence=0.55,
         )
 
     needs = set(dimension[2]) if dimension else set()
@@ -408,7 +407,6 @@ def _build_refund_sql(question: str, lowered: str) -> SQLGeneration | None:
             if grain
             else "Totalled refunds directly on the refunds table."
         ),
-        confidence=0.55,
     )
 
 
@@ -446,14 +444,12 @@ def build_sql(question: str) -> SQLGeneration | None:
                 tables_used=["employees"],
                 metrics=["employee_count"],
                 reasoning_summary="Grouped the employee roster by the requested attribute.",
-                confidence=0.55,
             )
         return SQLGeneration(
             sql="SELECT COUNT(*) AS employees FROM employees e",
             tables_used=["employees"],
             metrics=["employee_count"],
             reasoning_summary="Counted all employees.",
-            confidence=0.55,
         )
 
     metric_expr, metric_alias, metric_tables = _find_metric(question)
@@ -478,7 +474,6 @@ def build_sql(question: str) -> SQLGeneration | None:
             tables_used=["customers"],
             metrics=["customer_count"],
             reasoning_summary="Counted customers directly, without joining to orders.",
-            confidence=0.6,
         )
 
     if dimension is None and grain is None:
@@ -582,7 +577,6 @@ def build_sql(question: str) -> SQLGeneration | None:
             + (f" per {grain}" if grain else "")
             + "."
         ),
-        confidence=0.55,
     )
 
 
@@ -752,7 +746,6 @@ def _build_sql_generation(question: str, _prompt: str) -> SQLGeneration:
                 "The offline baseline has no rule covering this question. "
                 "Configure GEMINI_API_KEY for full natural-language coverage."
             ),
-            confidence=0.0,
         )
     return generated
 
